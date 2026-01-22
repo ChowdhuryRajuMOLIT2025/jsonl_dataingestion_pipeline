@@ -7,3 +7,6 @@ shipment_dec25.jsonl
 shipments_dec25.jsonl
 docs/walkthrough.md
  - Copy.env
+__pycache__/
+*.pyc
+jsonl_data_ingestion.py.bak
