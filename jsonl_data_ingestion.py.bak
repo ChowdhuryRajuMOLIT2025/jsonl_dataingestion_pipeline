@@ -1,0 +1,2887 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+# safe import for running E2E
+
+from datetime import datetime, date, timedelta
+import time
+
+start_time = time.perf_counter()
+
+
+# In[2]:
+
+
+# STEP 1 — Config + strict logging + fail-fast helpers + ENV (all wrapped)
+
+try:
+    print("STARTING DATA INGESTION PROCESS...")
+    print("READING ENVIORNMENTAL VARIABLES...")
+
+    import os
+    import sys
+    import logging
+    from dotenv import load_dotenv, find_dotenv
+
+    # ----------------------------
+    # Logger (strict + simple)
+    # ----------------------------
+    logger = logging.getLogger("shipment_ingestion")
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        _h = logging.StreamHandler(sys.stdout)
+        _h.setFormatter(logging.Formatter("[%(levelname)s] %(asctime)s | %(message)s"))
+        logger.addHandler(_h)
+
+    # ----------------------------
+    # Fail-fast helpers
+    # ----------------------------
+    def _require_env(name: str) -> str:
+        val = os.getenv(name)
+        if val is None or str(val).strip() == "":
+            logger.error(f"Missing required ENV variable: {name}")
+            raise EnvironmentError(f"Missing required ENV variable: {name}")
+        return val.strip()
+
+    def _info_env(name: str) -> str:
+        val = os.getenv(name)
+        if val is None or str(val).strip() == "":
+            logger.info(f"ENV (optional/empty): {name} = <EMPTY>")
+            return ""
+        logger.info(f"ENV loaded: {name}")
+        return val.strip()
+
+    # ----------------------------
+    # Load .env
+    # ----------------------------
+    load_dotenv(find_dotenv(), override=True)
+    logger.info("Loaded .env...")
+
+    # ----------------------------
+    # Azure Storage ENV (fail-fast on essentials)
+    # ----------------------------
+    AZURE_STORAGE_ACCOUNT_URL   = _require_env("AZURE_STORAGE_ACCOUNT_URL")
+    AZURE_STORAGE_CONTAINER_UPLD = _require_env("AZURE_STORAGE_CONTAINER_UPLD")
+    AZURE_STORAGE_CONTAINER_WNLD = _require_env("AZURE_STORAGE_CONTAINER_WNLD")
+    AZURE_STORAGE_CONN_STR      = _require_env("AZURE_STORAGE_CONN_STR")
+
+    # These can be optional depending on flow; keep as info-level for now
+    AZURE_BLOB_NAME = _info_env("AZURE_BLOB_NAME")
+    AZURE_BLOB      = _info_env("AZURE_BLOB")
+
+    logger.info("ENVIORNMENTAL VARIABLES STORED!")
+    logger.info("All required ENV variables are present.")
+
+    # ----------------------------
+    # Column mapping (schema contract)
+    # ----------------------------
+    logger.info("SETTING UP PRE-DEFINED COLUMN NAME AND POSITIONS...")
+
+    udf_cols = {
+     'Job No.': 'job_no',
+     'carr_eqp_uid': 'carr_eqp_uid',
+     'Container Number': 'container_number',
+     'Container Type': 'container_type',
+     'Destination Service': 'destination_service',
+     'Consignee Code (Multiple)': 'consignee_raw',
+     'PO Number (Multiple)': 'po_numbers',
+     'Booking Number (Multiple)': 'booking_numbers',
+     'FCR Number (Multiple)': 'fcr_numbers',
+     'Ocean BL No (Multiple)': 'obl_nos',
+     'Load Port': 'load_port',
+     'Final Load Port': 'final_load_port',
+     'Discharge Port': 'discharge_port',
+     'Last CY Location': 'last_cy_location',
+     'Place of Receipt': 'place_of_receipt',
+     'Place of Delivery': 'place_of_delivery',
+     'Final Destination': 'final_destination',
+     'First Vessel Code': 'first_vessel_code',
+     'First Vessel Name': 'first_vessel_name',
+     'First Voyage code': 'first_voyage_code',
+     'Final Carrier Code': 'final_carrier_code',
+     'Final Carrier SCAC Code': 'final_carrier_scac_code',
+     'Final Carrier Name': 'final_carrier_name',
+     'Final Vessel Code': 'final_vessel_code',
+     'Final Vessel Name': 'final_vessel_name',
+     'Final Voyage code': 'final_voyage_code',
+     'True Carrier Code': 'true_carrier_code',
+     'True Carrier SCAC Code': 'true_carrier_scac_code',
+     'True Carrier SCAC Name': 'true_carrier_scac_name',
+     'ETD LP': 'etd_lp_date',
+     'ETD FLP': 'etd_flp_date',
+     'ETA DP': 'eta_dp_date',
+     'ETA FD': 'eta_fd_date',
+     'Revised ETA': 'revised_eta_date',
+     'Predictive ETA': 'predictive_eta_date',
+     'ATD LP': 'atd_lp_date',
+     'ATA FLP': 'ata_flp_date',
+     'ATD FLP': 'atd_flp_date',
+     'ATA DP': 'ata_dp_date',
+     'Derived ATA DP': 'derived_ata_dp_date',
+     'Revised ETA FD': 'revised_eta_fd_date',
+     'Predictive ETA FD': 'predictive_eta_fd_date',
+     'Cargo Received Date (Multiple)': 'cargo_receiveds_date',
+     'Detention Free Days': 'detention_free_days',
+     'Demurrage Free Days': 'demurrage_free_days',
+     'Hot Container Flag': 'hot_container_flag',
+     'Supplier/Vendor Name': 'supplier_vendor_name',
+     'Manufacturer Name': 'manufacturer_name',
+     'Ship To Party Name': 'ship_to_party_name',
+     'Booking Approval Status': 'booking_approval_status',
+     'Service Contract Number': 'service_contract_number',
+     'CARRIER VEHICLE LOAD Date': 'carrier_vehicle_load_date',
+     'Carrier Vehicle Load Lcn': 'carrier_vehicle_load_lcn',
+     'Vehicle Departure Date': 'vehicle_departure_date',
+     'Vehicle Departure Lcn': 'vehicle_departure_lcn',
+     'Vehicle Arrival Date': 'vehicle_arrival_date',
+     'Vehicle Arrival Lcn': 'vehicle_arrival_lcn',
+     'Carrier Vehicle Unload Date': 'carrier_vehicle_unload_date',
+     'Carrier Vehicle Unload Lcn': 'carrier_vehicle_unload_lcn',
+     'Out Gate Date From DP': 'out_gate_from_dp_date',
+     'Out Gate Location': 'out_gate_from_dp_lcn',
+     'Equipment Arrived at Last CY': 'equipment_arrived_at_last_cy_date',
+     'Equipment Arrival at Last Lcn': 'equipment_arrived_at_last_cy_lcn',
+     'Out gate at Last CY': 'out_gate_at_last_cy_date',
+     'Out gate at Last CY Lcn': 'out_gate_at_last_cy_lcn',
+     'Delivery Date To Consignee': 'delivery_to_consignee_date',
+     'Delivery Date To Consignee Lcn': 'delivery_to_consignee_lcn',
+     'Empty Container Return Date': 'empty_container_return_date',
+     'Empty Container Return Lcn': 'empty_container_return_lcn',
+     'Late Booking Status': 'late_booking_status',
+     'Current Departure status': 'current_departure_status',
+     'Current Arrival status': 'current_arrival_status',
+     'Late Arrival status': 'late_arrival_status',
+     'Late Container Return status': 'late_container_return_status',
+     'CO2 Emission For Tank On Wheel': 'co2_tank_on_wheel',
+     'CO2 Emission For Well To Wheel': 'co2_well_to_wheel',
+     'Job Type': 'job_type',
+     'MCS HBL': 'mcs_hbl',
+     'Transport Mode': 'transport_mode',
+     'Rail Load DP Date': 'rail_load_dp_date',
+     'Rail Load DP Lcn': 'rail_load_dp_lcn',
+     'Rail Departure DP Date': 'rail_departure_dp_date',
+     'Rail Departure DP Lcn': 'rail_departure_dp_lcn',
+     'Rail Arrival Destination Date': 'rail_arrival_destination_date',
+     'Rail Arrival Destination Lcn': 'rail_arrival_destination_lcn',
+     'Cargo Ready Date': 'cargo_ready_date',
+     'IN-DC DATE': 'in-dc_date',
+     'Cargo Weight': 'cargo_weight_kg',
+     'Cargo Meassure': 'cargo_measure_cubic_meter',
+     'Cargo Count': 'cargo_count',
+     'Cargo UM': 'cargo_um',
+     'Cargo Detail Count': 'cargo_detail_count',
+     'Detail Cargo UM': 'detail_cargo_um',
+     '856 Filing Status': '856_filing_status',
+     'Get_ISF_submission_dt': 'get_isf_submission_date',
+     'Seal Number': 'seal_number',
+     'In Gate Date': 'in_gate_date',
+     'In Gate Lcn': 'in_gate_lcn',
+     'Empty Container Dispatch Date': 'empty_container_dispatch_date',
+     'Empty Container Dispatch Lcn': 'empty_container_dispatch_lcn'
+    }
+
+    # ----------------------------
+    # Mapping sanity checks (fail-fast)
+    # ----------------------------
+    if not isinstance(udf_cols, dict) or len(udf_cols) == 0:
+        logger.error("udf_cols mapping is empty or invalid.")
+        raise ValueError("udf_cols mapping is empty or invalid.")
+
+    # Ensure no duplicate target field names (will overwrite columns after rename)
+    targets = list(udf_cols.values())
+    dup_targets = sorted({t for t in targets if targets.count(t) > 1})
+    if dup_targets:
+        logger.error(f"Duplicate target column names in udf_cols (will collide): {dup_targets}")
+        raise ValueError(f"Duplicate target column names in udf_cols: {dup_targets}")
+
+    logger.info("COLUMNS NAME AND POSITION FINALIZED!")
+    logger.info(f"TOTAL RAW FILE COLUMNS: {len(udf_cols.keys())}")
+    logger.info(f"udf_cols loaded. Total mapped columns: {len(udf_cols)}")
+    logger.info("STEP 1 completed successfully.")
+
+except Exception as e:
+    # Always log with traceback for debugging
+    import traceback
+    logger = logging.getLogger("shipment_ingestion")
+    if logger.handlers:
+        logger.error("Cell 1 failed.", exc_info=True)
+    else:
+        print("Cell 1 failed with error:")
+        traceback.print_exc()
+    raise
+
+
+# In[3]:
+
+
+# STEP 2 — Blob connection test + download latest CSV (fail-fast + logger)
+
+try:
+    logger.info("CONNECTING TO RAW CONTAINER FOR RECENT CSV FILE")
+
+    from pathlib import Path
+    from typing import Optional, Tuple
+    from datetime import datetime
+
+    import pandas as pd
+    from azure.storage.blob import BlobServiceClient
+    from azure.core.exceptions import ResourceNotFoundError, ClientAuthenticationError, HttpResponseError
+
+    import warnings
+    warnings.filterwarnings("ignore")
+
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.max_rows", 100)
+    pd.set_option("display.max_colwidth", None)
+    pd.set_option("display.width", None)
+
+    # --- Notebook-friendly working directory
+    work_dir = Path.cwd() / "downloads"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Download directory ready: {work_dir}")
+
+    # --- Use env vars already validated in Cell 1
+    conn_str = AZURE_STORAGE_CONN_STR
+    container_name = AZURE_STORAGE_CONTAINER_WNLD
+
+    # (Optional) If you want to limit to a folder/prefix inside the container, set PREFIX = "folder/"
+    PREFIX: Optional[str] = None
+
+    # --- Blob helpers
+    def get_container_client(conn_str: str, container: str):
+        try:
+            bsc = BlobServiceClient.from_connection_string(conn_str)
+            return bsc.get_container_client(container)
+        except ClientAuthenticationError as e:
+            logger.error("Authentication failed creating BlobServiceClient.", exc_info=True)
+            raise PermissionError("Authentication failed. Check AZURE_STORAGE_CONN_STR.") from e
+        except Exception as e:
+            logger.error("Unexpected error creating BlobServiceClient.", exc_info=True)
+            raise
+
+    def find_latest_csv_blob(container_client, prefix: Optional[str] = None) -> Tuple[str, datetime]:
+        """
+        Find latest CSV in container by last_modified WITHOUT loading all blobs into a list.
+        """
+        latest_name = None
+        latest_lm = None
+
+        try:
+            for blob in container_client.list_blobs(name_starts_with=prefix):
+                name = blob.name
+                if not name or not name.lower().endswith(".csv"):
+                    continue
+                lm = blob.last_modified
+                if latest_lm is None or lm > latest_lm:
+                    latest_name = name
+                    latest_lm = lm
+        except ResourceNotFoundError as e:
+            logger.error(f"Container not found: {container_name}", exc_info=True)
+            raise FileNotFoundError(f"Container not found: {container_name}") from e
+        except ClientAuthenticationError as e:
+            logger.error("Authentication failed listing blobs.", exc_info=True)
+            raise PermissionError("Authentication failed. Check permissions.") from e
+        except HttpResponseError as e:
+            logger.error("HTTP error listing blobs.", exc_info=True)
+            raise RuntimeError(f"Failed to list blobs: {e}") from e
+
+        if not latest_name:
+            raise FileNotFoundError("No .csv blobs found in the container (or given prefix).")
+
+        return latest_name, latest_lm
+
+    def download_blob_to_file(container_client, blob_name: str, dest_dir: Path) -> Path:
+        bc = container_client.get_blob_client(blob_name)
+        local_path = dest_dir / Path(blob_name).name
+
+        try:
+            logger.info(f"Downloading blob: {blob_name}")
+            with open(local_path, "wb") as f:
+                stream = bc.download_blob(max_concurrency=4)
+                stream.readinto(f)
+            logger.info(f"Saved blob to: {local_path}")
+            return local_path
+
+        except ResourceNotFoundError as e:
+            logger.error(f"Blob not found: {blob_name}", exc_info=True)
+            raise FileNotFoundError(f"Blob not found: {blob_name}") from e
+        except ClientAuthenticationError as e:
+            logger.error("Authentication failed downloading blob.", exc_info=True)
+            raise PermissionError("Authentication failed. Check connection string/permissions.") from e
+        except HttpResponseError as e:
+            logger.error("HTTP error downloading blob.", exc_info=True)
+            raise RuntimeError(f"Blob download failed: {e}") from e
+
+    def read_csv_with_fallback(csv_path: Path) -> pd.DataFrame:
+        """
+        Read raw CSV safely for pipeline work:
+        - dtype=str prevents leading-zero loss and mixed-type inference hell.
+        """
+        try:
+            return pd.read_csv(csv_path, dtype=str, keep_default_na=False, low_memory=False, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            return pd.read_csv(csv_path, dtype=str, keep_default_na=False, low_memory=False, encoding="iso-8859-1")
+
+    # --- Execute
+    logger.info(f"Connecting to container: {container_name}")
+    cc = get_container_client(conn_str, container_name)
+
+    latest_name, latest_dt = find_latest_csv_blob(cc, prefix=PREFIX)
+    logger.info(f"Latest CSV (by last_modified): {latest_name} | server time: {latest_dt}")
+    print(f"Latest CSV by last_modified: {latest_name} (server time: {latest_dt})")
+
+    local_csv = download_blob_to_file(cc, latest_name, work_dir)
+    raw_df = read_csv_with_fallback(local_csv)
+
+    logger.info(f"Loaded DataFrame: shape={raw_df.shape}\n")
+    display(raw_df.head(3))
+    print('\n')
+
+    logger.info("RECENT FILE READING FINISHED!")
+    logger.info("STEP 2 completed successfully.")
+
+except Exception as err:
+    logger.error(f"Cell 2 failed: {err}", exc_info=True)
+    raise
+
+
+# In[4]:
+
+
+# STEP 3. Strict header validation: name + position + length (fail-fast)
+
+try:
+    logger.info("VALIDATING HEADER COLUMNS NAME AND ITS POSITIONS AS PRE-DEFINED SCHEMA...")
+
+    # --- 1) Normalize headers: remove \n, tabs, repeated spaces
+    original_cols = list(raw_df.columns)
+
+    raw_df.columns = (
+        pd.Index(raw_df.columns)
+        .astype(str)
+        .str.replace(r"[\n\r\t]+", " ", regex=True)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    # Report which columns changed after normalization
+    changed = [(a, b) for a, b in zip(original_cols, list(raw_df.columns)) if a != b]
+    if changed:
+        logger.info(f"Header normalization changed {len(changed)} column(s). Sample (up to 10):")
+        for a, b in changed[:10]:
+            logger.info(f"  '{a}'  ->  '{b}'")
+    else:
+        logger.info("No header normalization changes needed.")
+
+    logger.info("UNWANTED CHARACTER FROM HEADER REMOVED!")
+
+    # --- 2) Build expected vs actual lists
+    expected = list(udf_cols.keys())
+    actual = list(raw_df.columns)
+
+    # --- 3) Length check (must match for position validation)
+    if len(actual) != len(expected):
+        missing = [c for c in expected if c not in actual]
+        extra   = [c for c in actual if c not in expected]
+        logger.error(f"Header length mismatch. expected={len(expected)} actual={len(actual)}")
+        logger.error(f"Missing columns (count={len(missing)}): {missing[:25]}")
+        logger.error(f"Extra columns (count={len(extra)}): {extra[:25]}")
+        raise ValueError("HEADER VALIDATION FAILED: column count mismatch.")
+
+    # --- 4) Exact position+name check
+    mismatches = []
+    for i, (act, exp) in enumerate(zip(actual, expected)):
+        if act != exp:
+            mismatches.append((i, act, exp))
+
+    if mismatches:
+        logger.error(f"HEADER VALIDATION FAILED: {len(mismatches)} mismatch(es) found.")
+        logger.error("First 20 mismatches (index | actual -> expected):")
+        for i, act, exp in mismatches[:20]:
+            logger.error(f"  [{i}] '{act}'  ->  '{exp}'")
+
+        # Extra diagnostic: show neighbors around first mismatch
+        i0 = mismatches[0][0]
+        left = max(0, i0 - 3)
+        right = min(len(actual), i0 + 4)
+        logger.error("Context around first mismatch:")
+        for j in range(left, right):
+            logger.error(f"  [{j}] actual='{actual[j]}' | expected='{expected[j]}'")
+
+        raise ValueError("HEADER VALIDATION FAILED: name/position mismatch.")
+
+    logger.info("Header validated: all columns match schema name AND position.")
+    logger.info("CHANGING COLUMNS NAMES FOR USING IN UPSTREAM...")
+
+    # --- 5) Rename to canonical names
+    raw_df.rename(columns=udf_cols, inplace=True)
+
+    logger.info(f"CHANGING COLUMNS NAMES DONE! Dataset shape: {raw_df.shape}")
+    display(raw_df.head(3))
+    logger.info("STEP 3 completed successfully.")
+except Exception as e:
+    logger.error(f"Header validation step failed: {e}", exc_info=True)
+    raise
+
+
+# In[5]:
+
+
+# STEP 4 — Robust post-canonical cleanup (strings, booleans, IDs, dates, consignee split) — fail-fast + logger
+
+try:
+    logger.info("Starting STEP 4: post-canonical cleanup pipeline")
+
+    import re
+    import pandas as pd
+    import numpy as np
+
+    # # ---- Guard rails: keep raw_df untouched; df is canonical from Step 3
+    # if "raw_df" not in globals():
+    #     logger.error("raw_df not found. Keep raw_df from Cell 2.")
+    #     raise NameError("raw_df not found. Please keep raw_df from the CSV load step.")
+    # if "df" not in globals():
+    #     logger.error("df not found. df should be output from Step 3 (renamed canonical).")
+    #     raise NameError("df not found. Please run Step 3 and create df (canonical).")
+
+    # ---- 1) Normalize object strings (strip, handle '()' and literal nan)
+    def normalize_object_strings(in_df: pd.DataFrame) -> pd.DataFrame:
+        out = in_df.copy()
+        obj_cols = out.select_dtypes(include=["object", "string"]).columns
+        if len(obj_cols) == 0:
+            return out
+        out[obj_cols] = out[obj_cols].apply(lambda s: s.astype("string").str.strip())
+        out[obj_cols] = out[obj_cols].replace("()", "", regex=False)
+        out[obj_cols] = out[obj_cols].replace({"nan": pd.NA, "NaN": pd.NA, "None": pd.NA, "null": pd.NA, "": pd.NA})
+        return out
+
+    # ---- 2) Ensure ID-ish columns are strings (no quotes)
+    ID_AS_STR = ["job_no", "carr_eqp_uid", "po_numbers", "obl_nos"]  # keep your naming
+    def ensure_str_ids(in_df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        out = in_df.copy()
+        for c in cols:
+            if c in out.columns:
+                out[c] = out[c].astype("string").str.replace('"', "", regex=False).str.strip()
+        return out
+
+    # ---- 3) Booleans: case-insensitive map to pandas BooleanDtype
+    BOOL_COLS = ["hot_container_flag"]
+    def coerce_booleans(in_df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        out = in_df.copy()
+        mapping = {
+            "Y": True, "YES": True, "TRUE": True, "1": True,
+            "N": False, "NO": False, "FALSE": False, "0": False
+        }
+        for c in cols:
+            if c in out.columns:
+                s = out[c].astype("string").str.strip().str.upper()
+                out[c] = s.map(mapping).astype("boolean")
+        return out
+
+    # ---- 4) Drop columns you truly don’t want (safe ignore)
+    DROP_COLS = [
+        "first_vessel_code", "first_voyage_code", "final_carrier_code", "final_carrier_scac_code",
+        "final_vessel_code", "final_voyage_code", "true_carrier_code", "true_carrier_scac_code",
+        "late_booking_status", "current_departure_status", "current_arrival_status",
+        "late_arrival_status", "late_container_return_status"
+    ]
+
+    # ---- 5) Date parsing: normalize to 'YYYY-MM-DD' strings (NOT date objects)
+    # Your schema already names date columns with *_date
+    DATE_COLS = [c for c in raw_df.columns if c.endswith("_date")]
+
+    # Multi-date column in your schema (keep name as-is for now)
+    # You told me you'll handle it soon; we still must normalize it safely.
+    MULTI_DATE_COLS = {"cargo_receiveds_date"}  # your current canonical name
+
+    def _to_yyyy_mm_dd(x) -> str | None:
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return None
+        s = str(x).strip()
+        if s == "" or s.lower() in {"nan", "none", "null"}:
+            return None
+        dt = pd.to_datetime(s, dayfirst=True, errors="coerce", utc=True)
+        if pd.isna(dt):
+            return None
+        return dt.strftime("%Y-%m-%d")
+
+    def convert_dates(in_df: pd.DataFrame, date_cols: list[str], multi_date_cols: set[str]) -> pd.DataFrame:
+        out = in_df.copy()
+
+        for c in date_cols:
+            if c not in out.columns:
+                continue
+
+            if c in multi_date_cols:
+                # e.g. "28/08/2025, 29/08/2025" -> "2025-08-28,2025-08-29" (string)
+                def _handle_multi(v):
+                    if v is None or (isinstance(v, float) and np.isnan(v)):
+                        return None
+                    s = str(v).strip()
+                    if not s or s.lower() in {"nan", "none", "null"}:
+                        return None
+                    parts = [p.strip() for p in s.split(",") if p.strip()]
+                    normed = [_to_yyyy_mm_dd(p) for p in parts]
+                    normed = [d for d in normed if d]  # drop unparsable
+                    return ",".join(normed) if normed else None
+
+                out[c] = out[c].map(_handle_multi).astype("string")
+            else:
+                out[c] = out[c].map(_to_yyyy_mm_dd).astype("string")
+
+        return out
+
+    # ---- 6) Consignee split for RLS (regex, not slicing)
+    # Raw field: consignee_raw (you said you renamed already)
+    CONSIGNEE_RAW_COL = "consignee_raw"
+    code_re = re.compile(r"\((\d+)\)\s*$")
+
+    def split_consignee(in_df: pd.DataFrame) -> pd.DataFrame:
+        out = in_df.copy()
+
+        if CONSIGNEE_RAW_COL not in out.columns:
+            logger.error(f"Missing {CONSIGNEE_RAW_COL}. Cannot derive consignee_name/codes for RLS.")
+            raise ValueError(f"Missing {CONSIGNEE_RAW_COL}.")
+
+        def _parse_one(v):
+            if v is None:
+                return (None, [])
+            s = str(v).strip()
+            if not s or s.lower() in {"nan", "none", "null"}:
+                return (None, [])
+            # allow multiple consignees separated by | or ;
+            candidates = re.split(r"[|;]\s*", s)
+            names, codes = [], []
+            for c in candidates:
+                c = c.strip()
+                if not c:
+                    continue
+                m = code_re.search(c)
+                if m:
+                    codes.append(m.group(1))
+                    nm = c[:m.start()].strip()
+                    if nm:
+                        names.append(nm)
+                else:
+                    names.append(c)
+            # dedupe codes
+            seen = set()
+            dedup = []
+            for cd in codes:
+                if cd not in seen:
+                    dedup.append(cd)
+                    seen.add(cd)
+            primary_name = names[0] if names else s
+            return (primary_name, dedup)
+
+        parsed = out[CONSIGNEE_RAW_COL].map(_parse_one)
+        out["consignee_name"] = parsed.map(lambda t: t[0]).astype("string")
+        out["consignee_codes"] = parsed.map(lambda t: t[1])  # list for RLS filtering
+
+        return out
+
+    # ---- 7) Build cleaned df
+    clean_df = (
+        raw_df
+        .pipe(normalize_object_strings)
+        .pipe(ensure_str_ids, ID_AS_STR)
+        .pipe(coerce_booleans, BOOL_COLS)
+        .drop(columns=DROP_COLS, errors="ignore")
+        .pipe(convert_dates, DATE_COLS, MULTI_DATE_COLS)
+        .pipe(split_consignee)
+    )
+
+    # ---- 8) Final sanity checks
+    if clean_df["carr_eqp_uid"].isna().any():
+        logger.error("carr_eqp_uid has nulls after cleaning (should not happen).")
+        raise ValueError("Null carr_eqp_uid after cleaning.")
+
+    
+    clean_df = clean_df.sort_values(by=['carr_eqp_uid'])
+    clean_df = clean_df.drop_duplicates(subset=['carr_eqp_uid'], keep='first')
+    # dup_mask = clean_df["carr_eqp_uid"].duplicated(keep=False)
+    # if dup_mask.any():
+    #     sample = clean_df.loc[dup_mask, "carr_eqp_uid"].head(10).tolist()
+    #     logger.error(f"Duplicate carr_eqp_uid after cleaning: {sample}")
+    #     raise ValueError("Duplicate carr_eqp_uid after cleaning.")
+
+    logger.info(f"Cleaned DataFrame ready: {clean_df.shape}")
+    display(clean_df.head(3))
+
+    logger.info("STEP 4 completed successfully.")
+
+except Exception as e:
+    logger.error(f"STEP 4 failed: {e}", exc_info=True)
+    raise
+
+
+# raw_df.columns -> clean_df
+# 
+# deriving **Advance Columns** for building inferences
+
+# In[6]:
+
+
+clean_df.sample(3)
+
+
+# In[7]:
+
+
+# STEP 5-1 — Function-based derivation for optimal_ata_dp_date & optimal_eta_fd_date
+
+try:
+    logger.info("Starting Step 5-1: define + apply date-derivation helpers")
+
+    # ----------------------------
+    # Helper 1: derive optimal ATA at DP
+    # ----------------------------
+    def derive_optimal_ata_dp_date(
+        df: pd.DataFrame,
+        ata_col: str = "ata_dp_date",
+        derived_col: str = "derived_ata_dp_date",
+        out_col: str = "optimal_ata_dp_date",
+        use_derived_if_past: bool = True,
+        today: pd.Timestamp | None = None,
+    ) -> pd.DataFrame:
+        """
+        Rule:
+        - Start from actual ATA (ata_dp_date)
+        - If missing, optionally use derived_col only if < today (cargo 'should have' arrived)
+        - Otherwise, leave NA (not yet reached).
+        Output is 'YYYY-MM-DD' string or <NA>.
+        """
+        out = df.copy()
+
+        if today is None:
+            today = pd.Timestamp.utcnow().normalize()  # UTC today only date part; swap to local if needed
+
+        ata = pd.to_datetime(out.get(ata_col), errors="coerce", utc=True)
+        derived = pd.to_datetime(out.get(derived_col), errors="coerce", utc=True)
+
+        optimal = ata.copy()
+
+        if use_derived_if_past:
+            mask_no_ata = optimal.isna()
+            mask_derived_valid = derived.notna() & (derived < today)
+            use_derived = mask_no_ata & mask_derived_valid
+            optimal[use_derived] = derived[use_derived]
+        else:
+            use_derived = pd.Series(False, index=out.index)
+
+        # stringify
+        out[out_col] = optimal.dt.strftime("%Y-%m-%d").astype("string")
+
+        n_actual = ata.notna().sum()
+        n_derived_used = use_derived.sum()
+        n_na = out[out_col].isna().sum()
+
+        logger.info(
+            f"{out_col}: from {ata_col}={n_actual}, "
+            f"from {derived_col}(<today)={n_derived_used}, NA={n_na}"
+        )
+
+        return out
+
+    # ----------------------------
+    # Helper 2: generic "priority date" chooser
+    # ----------------------------
+    def derive_optimal_eta_fd_date(
+        df: pd.DataFrame,
+        priority_cols: list[str],
+        out_col: str,
+    ) -> pd.DataFrame:
+        """
+        Generic helper:
+        - Given a list of date-like columns (strings), choose the first non-null
+          value row-wise, after coercing to datetime.
+        - Output as 'YYYY-MM-DD' string or <NA>.
+        """
+        out = df.copy()
+
+        if not priority_cols:
+            raise ValueError("priority_cols must be non-empty.")
+
+        # Coerce each candidate to datetime
+        dt_cols = {}
+        for c in priority_cols:
+            if c not in out.columns:
+                logger.warning(f"{out_col}: priority col '{c}' not in DataFrame; skipping.")
+                dt_cols[c] = pd.Series(pd.NaT, index=out.index)
+            else:
+                dt_cols[c] = pd.to_datetime(out[c], errors="coerce", utc=True)
+
+        # Start from first column
+        optimal = dt_cols[priority_cols[0]].copy()
+
+        # Fill from remaining in order
+        for c in priority_cols[1:]:
+            mask_missing = optimal.isna()
+            optimal[mask_missing] = dt_cols[c][mask_missing]
+
+        out[out_col] = optimal.dt.strftime("%Y-%m-%d").astype("string")
+
+        # simple stats
+        contributions = {}
+        remaining = optimal.copy()
+
+        for c in priority_cols:
+            src = dt_cols[c]
+            used = (src.notna()) & (remaining.notna()) & (src == remaining)
+            contributions[c] = int(used.sum())
+
+        n_na = out[out_col].isna().sum()
+
+        logger.info(f"{out_col} contributions by priority:")
+        for c, n in contributions.items():
+            logger.info(f"  {c}: {n}")
+        logger.info(f"{out_col}: NA rows: {n_na}")
+
+        return out
+
+    # ----------------------------
+    # Apply to clean_df
+    # ----------------------------
+    df_dates = clean_df.copy()
+
+    # 1) optimal_ata_dp_date: ata > derived_ata(if < today)
+    df_dates = derive_optimal_ata_dp_date(
+        df_dates,
+        ata_col="ata_dp_date",
+        derived_col="derived_ata_dp_date",
+        out_col="optimal_ata_dp_date",
+        use_derived_if_past=True,
+    )
+
+    # 2) optimal_eta_fd_date: predictive > revised > eta_fd
+    df_dates = derive_optimal_eta_fd_date(
+        df_dates,
+        priority_cols=["predictive_eta_fd_date", "revised_eta_fd_date", "eta_fd_date"],
+        out_col="optimal_eta_fd_date",
+    )
+
+    # ----------------------------
+    # Drop redundant columns (DATE NOISE ONLY, not business fields)
+    # ----------------------------
+    drop_cols = [
+        # DP side
+        "ata_dp_date",
+        "predictive_eta_date",
+        "revised_eta_date",
+        # FD ETA side
+        "predictive_eta_fd_date",
+        "revised_eta_fd_date",
+        "eta_fd_date",
+    ]
+    drop_cols_existing = [c for c in drop_cols if c in df_dates.columns]
+    if drop_cols_existing:
+        logger.info(f"Dropping redundant date columns: {drop_cols_existing}")
+        df_dates = df_dates.drop(columns=drop_cols_existing, errors="ignore")
+
+    clean_df = df_dates  # update canonical cleaned frame
+
+    logger.info(f"After date-derivation helpers, clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "eta_dp_date",
+                "derived_ata_dp_date",
+                "optimal_ata_dp_date",
+                "optimal_eta_fd_date",
+            ]
+        ].head(10)
+    )
+
+    logger.info("Step 5-1 completed successfully.")
+
+except Exception as e:
+    logger.error(f"Step 5-1 failed: {e}", exc_info=True)
+    raise
+
+
+# In[8]:
+
+
+# Step 5-2: Shipment status + delay metrics (DP + Final Destination)
+
+# — Top-down stage-based shipment_status
+
+try:
+    logger.info("Computing shipment_status with top-down stage logic")
+
+    TODAY_TS = pd.Timestamp.utcnow().normalize()
+
+    def derive_shipment_status_topdown(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+
+        # --- Parse all relevant dates once (vectorized) ---
+        empty_ret   = pd.to_datetime(out["empty_container_return_date"], errors="coerce", utc=True)
+        delivery    = pd.to_datetime(out["delivery_to_consignee_date"], errors="coerce", utc=True)
+        out_dp      = pd.to_datetime(out["out_gate_from_dp_date"], errors="coerce", utc=True)
+
+        equip_arr   = pd.to_datetime(out["equipment_arrived_at_last_cy_date"], errors="coerce", utc=True)
+        out_last_cy = pd.to_datetime(out["out_gate_at_last_cy_date"], errors="coerce", utc=True)
+
+        # DP arrival: use optimal_ata_dp_date, fallback to derived_ata_dp_date if needed
+        dp_opt      = pd.to_datetime(out["optimal_ata_dp_date"], errors="coerce", utc=True)
+        dp_derived  = pd.to_datetime(out["derived_ata_dp_date"], errors="coerce", utc=True)
+        dp_arrival_raw = dp_opt.fillna(dp_derived)   # may be future; we'll filter for actual arrival
+
+        atd_lp      = pd.to_datetime(out["atd_lp_date"], errors="coerce", utc=True)
+        atd_flp     = pd.to_datetime(out["atd_flp_date"], errors="coerce", utc=True)
+        etd_lp      = pd.to_datetime(out["etd_lp_date"], errors="coerce", utc=True)
+
+        # Only treat DP arrivals in the past or today as "arrived"
+        dp_actual = dp_arrival_raw.where(dp_arrival_raw <= TODAY_TS)
+
+        status = pd.Series("UNKNOWN", index=out.index, dtype="string")
+
+        # Stage 7: Empty container return
+        m_empty = empty_ret.notna()
+        status[m_empty] = "EMPTY_RETURNED"
+
+        # Stage 6: Delivered to consignee
+        m_delivered = delivery.notna() & ~m_empty
+        status[m_delivered] = "DELIVERED"
+
+        # Stage 5: Inland transit from DP (out_gate_from_dp_date)
+        m_in_inland = out_dp.notna() & ~m_empty & ~m_delivered
+        status[m_in_inland] = "IN_INLAND_TRANSIT"
+
+        # Stage 4: At last CY (arrived at last CY, or gate-out recorded, but no DP-out yet)
+        m_last_cy = (equip_arr.notna() | out_last_cy.notna()) & ~m_empty & ~m_delivered & ~m_in_inland
+        status[m_last_cy] = "AT_LAST_CY"
+
+        # Stage 3: At discharge port (actual arrival at DP)
+        m_dp_arrived = dp_actual.notna() & ~m_empty & ~m_delivered & ~m_in_inland & ~m_last_cy
+        status[m_dp_arrived] = "AT_DISCHARGE_PORT"
+
+        # Stage 2: In ocean (departed load port and/or transshipment, but not yet DP-level stages)
+        m_ocean = (
+            (atd_lp.notna() | atd_flp.notna()) &
+            ~m_empty & ~m_delivered & ~m_in_inland & ~m_last_cy & ~m_dp_arrived
+        )
+        status[m_ocean] = "IN_OCEAN"
+
+        # Stage 1: At origin (have ETD from LP, but no departure / higher stage)
+        m_origin = (
+            etd_lp.notna() &
+            ~m_empty & ~m_delivered & ~m_in_inland & ~m_last_cy & ~m_dp_arrived & ~m_ocean
+        )
+        status[m_origin] = "AT_ORIGIN"
+
+        out["shipment_status"] = status
+
+        logger.info("shipment_status (top-down) distribution:")
+        logger.info(out["shipment_status"].value_counts(dropna=False).to_dict())
+
+        return out
+
+    clean_df = derive_shipment_status_topdown(clean_df)
+
+    logger.info(f"shipment_status recomputed. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "empty_container_return_date",
+                "delivery_to_consignee_date",
+                "out_gate_from_dp_date",
+                "equipment_arrived_at_last_cy_date",
+                "out_gate_at_last_cy_date",
+                "optimal_ata_dp_date",
+                "derived_ata_dp_date",
+                "atd_flp_date",
+                "atd_lp_date",
+                "etd_lp_date",
+                "shipment_status",
+            ]
+        ].head(15)
+    )
+
+    logger.info("Top-down shipment_status cell completed successfully.")
+
+except Exception as e:
+    logger.error(f"Top-down shipment_status cell failed: {e}", exc_info=True)
+    raise
+
+
+# In[9]:
+
+
+# test cases
+
+clean_df['shipment_status'].value_counts()
+
+
+# In[10]:
+
+
+# Step 5-3 — Vessel & carrier summaries (with optional drop of raw cols)
+
+try:
+    logger.info("Starting Step 5-3: deriving 'vessel_summary' and 'carrier_summary'")
+
+    import pandas as pd
+
+    if "clean_df" not in globals():
+        raise NameError("clean_df not found. Run previous steps first.")
+
+    def _norm_text(v):
+        """Normalize a scalar to clean text or None."""
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        if not s or s.lower() in {"nan", "none", "null"}:
+            return None
+        return s
+
+    # 1) Your existing vessel function, upgraded but SAME NAME
+    def derive_vessel_summary(row: pd.Series) -> str:
+        """
+        Craft vessel summary from:
+        - first_vessel_name
+        - final_vessel_name (only if different from first)
+        """
+        first_vessel = _norm_text(row.get("first_vessel_name"))
+        final_vessel = _norm_text(row.get("final_vessel_name"))
+
+        vessels: list[str] = []
+
+        if first_vessel:
+            vessels.append(f"First vessel: {first_vessel}")
+
+        if final_vessel and final_vessel != first_vessel:
+            vessels.append(f"Final vessel: {final_vessel}")
+
+        return " | ".join(vessels)
+
+    # 2) Separate carrier summary
+    def derive_carrier_summary(row: pd.Series) -> str:
+        """
+        Craft carrier/operator summary from:
+        - final_carrier_name
+        - true_carrier_scac_name
+        """
+        final_carrier = _norm_text(row.get("final_carrier_name"))
+        true_scac = _norm_text(row.get("true_carrier_scac_name"))
+
+        parts: list[str] = []
+
+        if final_carrier and true_scac and final_carrier != true_scac:
+            parts.append(f"Operated by {final_carrier} ({true_scac})")
+        elif final_carrier:
+            parts.append(f"Operated by {final_carrier}")
+        elif true_scac:
+            parts.append(f"Operated by {true_scac}")
+
+        return " | ".join(parts)
+
+    # 3) Apply to clean_df
+    clean_df = clean_df.copy()
+    logger.info("Applying derive_vessel_summary and derive_carrier_summary row-wise...")
+
+    clean_df["vessel_summary"] = clean_df.apply(derive_vessel_summary, axis=1)
+    clean_df["carrier_summary"] = clean_df.apply(derive_carrier_summary, axis=1)
+
+    logger.info(f"'vessel_summary' and 'carrier_summary' created. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "first_vessel_name",
+                "final_vessel_name",
+                "final_carrier_name",
+                "true_carrier_scac_name",
+                "vessel_summary",
+                "carrier_summary",
+            ]
+        ].head(10)
+    )
+
+    # 4) OPTIONAL: drop raw vessel/carrier columns from this frame
+    # WARNING: I recommend doing this ONLY in the final projection for index, not in the master clean_df.
+    # DROP_VESSEL_CARRIER_COLS = [
+    #     "first_vessel_name",
+    #     "final_vessel_name",
+    #     "final_carrier_name",
+    #     "true_carrier_scac_name",
+    # ]
+
+    # If you really want to drop them now, uncomment the next block:
+    #
+    # existing_drop = [c for c in DROP_VESSEL_CARRIER_COLS if c in clean_df.columns]
+    # if existing_drop:
+    #     logger.info(f"Dropping raw vessel/carrier columns: {existing_drop}")
+    #     clean_df = clean_df.drop(columns=existing_drop, errors="ignore")
+    #     logger.info(f"After dropping raw vessel/carrier columns, clean_df shape: {clean_df.shape}")
+
+    logger.info("Vessel & carrier summary cell completed successfully.")
+
+except Exception as e:
+    logger.error(f"Vessel & carrier summary cell failed: {e}", exc_info=True)
+    raise
+
+
+# In[11]:
+
+
+clean_df['vessel_summary'].sample(3)
+
+
+# In[12]:
+
+
+clean_df['carrier_summary'].sample(3)
+
+
+# In[13]:
+
+
+# Step 5-4 — Port route summary (origin -> load -> transshipment -> DP -> delivery -> final)
+
+try:
+    logger.info("Starting Step 5-4: deriving 'port_route_summary'")
+
+    def _norm_loc(v):
+        """Normalize a location-like field to clean text or None."""
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        if not s or s.lower() in {"nan", "none", "null"}:
+            return None
+        s_lower = s.lower()
+        if s_lower in {"nan", "none", "null", "<na>", "<na >", "<na/>", "<na"}:
+            return None
+        return s
+
+    def derive_port_route_summary(row: pd.Series) -> str:
+        """
+        Intelligent voyage route summary:
+
+        Stage-wise:
+        - Origin / Load port
+        - Transshipment (final_load_port)
+        - Discharge port
+        - Place of delivery
+        - Final destination
+        """
+
+        place_of_receipt   = _norm_loc(row.get("place_of_receipt"))
+        load_port          = _norm_loc(row.get("load_port"))
+        final_load_port    = _norm_loc(row.get("final_load_port"))
+        discharge_port     = _norm_loc(row.get("discharge_port"))
+        place_of_delivery  = _norm_loc(row.get("place_of_delivery"))
+        final_destination  = _norm_loc(row.get("final_destination"))
+
+        route_parts: list[str] = []
+
+        # ---- Origin / Load Port ----
+        if place_of_receipt and load_port and place_of_receipt != load_port:
+            route_parts.append(f"Origin: {place_of_receipt} -> Load Port: {load_port}")
+        elif load_port:
+            # Either place_of_receipt == load_port, or POR missing
+            route_parts.append(f"Origin: {load_port}")
+        elif place_of_receipt:
+            # No load_port but we at least know POR
+            route_parts.append(f"Origin: {place_of_receipt}")
+
+        # ---- Transshipment port (Final Load Port) ----
+        # Only add if it is a real hop different from load_port and discharge_port
+        if final_load_port and final_load_port not in {load_port, discharge_port}:
+            route_parts.append(f"Transshipment Port: {final_load_port}")
+
+        # ---- Discharge Port ----
+        if discharge_port:
+            route_parts.append(f"Discharge Port: {discharge_port}")
+
+        # ---- Place of Delivery ----
+        if place_of_delivery and place_of_delivery != discharge_port:
+            route_parts.append(f"Delivery At: {place_of_delivery}")
+
+        # ---- Final Destination ----
+        if final_destination:
+            if place_of_delivery:
+                if final_destination != place_of_delivery:
+                    route_parts.append(f"Final: {final_destination}")
+            else:
+                # No explicit place_of_delivery; avoid repeating discharge port
+                if final_destination != discharge_port:
+                    route_parts.append(f"Final: {final_destination}")
+
+        return " -> ".join(route_parts)
+
+    # Apply to current cleaned dataset
+    clean_df = clean_df.copy()
+    logger.info("Applying derive_port_route_summary row-wise...")
+    clean_df["port_route_summary"] = clean_df.apply(derive_port_route_summary, axis=1)
+
+    logger.info(f"'port_route_summary' column created. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "place_of_receipt",
+                "load_port",
+                "final_load_port",
+                "discharge_port",
+                "place_of_delivery",
+                "final_destination",
+                "port_route_summary",
+            ]
+        ].head(5)
+    )
+
+    logger.info("Crafting Port route summary completed successfully.")
+
+except Exception as e:
+    logger.error(f"Crafting Port route summary failed: {e}", exc_info=True)
+    raise
+
+
+# In[14]:
+
+
+clean_df['port_route_summary'].sample(2)
+
+
+# In[15]:
+
+
+clean_df.head(3)
+
+
+# In[16]:
+
+
+# STEP 5-5 — Unified delay metrics for DP and FD
+# Creates:
+#   delayed_dp, dp_delayed_dur
+#   delayed_fd, fd_delayed_dur
+
+try:
+    logger.info("Starting Step 5-5: unified delay metrics for DP and FD")
+
+    TODAY_TS = pd.Timestamp.utcnow().normalize()
+
+    def _compute_delay_core(
+        planned_ts: pd.Series,
+        actual_ts: pd.Series,
+        today: pd.Timestamp,
+    ) -> tuple[pd.Series, pd.Series]:
+        """
+        Core delay logic used for both DP and FD.
+
+        Inputs:
+          planned_ts: planned date as datetime (UTC)
+          actual_ts:  actual completion date as datetime (UTC), may be NaT
+          today:      reference 'today' (datetime, UTC-normalized)
+
+        Output:
+          status: 'delay' | 'early' | 'on_time' | 'unknown'
+          dur:    float days (negative = early, 0 = on_time, NaN = unknown)
+        """
+        idx = planned_ts.index
+
+        planned = planned_ts.dt.floor("D")
+        actual  = actual_ts.dt.floor("D")
+        today_d = today.floor("D")
+
+        status = pd.Series("unknown", index=idx, dtype="string")
+        dur    = pd.Series(np.nan, index=idx, dtype="float")
+
+        has_planned = planned.notna()
+        has_actual  = actual.notna()
+
+        # Case 1: planned and actual both present
+        mask_both = has_planned & has_actual
+        if mask_both.any():
+            delta = (actual - planned).dt.days
+
+            m_delay   = mask_both & (delta > 0)
+            m_early   = mask_both & (delta < 0)
+            m_on_time = mask_both & (delta == 0)
+
+            status[m_delay]   = "delay"
+            dur[m_delay]      = delta[m_delay]
+
+            status[m_early]   = "early"
+            dur[m_early]      = delta[m_early]  # negative = early arrival
+
+            status[m_on_time] = "on_time"
+            dur[m_on_time]    = 0
+
+        # Case 2: planned present, actual missing (not completed yet)
+        mask_plan_only = has_planned & ~has_actual
+        if mask_plan_only.any():
+            delta_today = (today_d - planned).dt.days
+
+            # today > ETA -> delayed by that many days
+            m_overdue = mask_plan_only & (delta_today > 0)
+            status[m_overdue] = "delay"
+            dur[m_overdue]    = delta_today[m_overdue]
+
+            # today <= ETA -> still on track
+            m_not_due = mask_plan_only & (delta_today <= 0)
+            status[m_not_due] = "on_time"
+            dur[m_not_due]    = 0
+
+        # Case 3: no planned ETA -> remains 'unknown', NaN
+
+        return status, dur
+
+    df_delay = clean_df.copy()
+
+    # ---------------------------
+    # DP delay:
+    # planned_dp = eta_dp_date
+    # actual_dp  = optimal_ata_dp_date
+    # ---------------------------
+    planned_dp_ts = pd.to_datetime(df_delay["eta_dp_date"], errors="coerce", utc=True)
+    actual_dp_ts  = pd.to_datetime(df_delay["optimal_ata_dp_date"], errors="coerce", utc=True)
+
+    delayed_dp, dp_dur = _compute_delay_core(planned_dp_ts, actual_dp_ts, TODAY_TS)
+    df_delay["delayed_dp"] = delayed_dp
+    df_delay["dp_delayed_dur"] = dp_dur
+
+    logger.info("DP delay status distribution:")
+    logger.info(df_delay["delayed_dp"].value_counts(dropna=False).to_dict())
+
+    # ---------------------------
+    # FD delay:
+    # planned_fd = optimal_eta_fd_date
+    # actual_fd  = delivery_to_consignee_date
+    #             else empty_container_return_date
+    #             else treated as not completed (uses today vs planned)
+    # ---------------------------
+    planned_fd_ts = pd.to_datetime(df_delay["optimal_eta_fd_date"], errors="coerce", utc=True)
+
+    delivery_ts  = pd.to_datetime(df_delay["delivery_to_consignee_date"], errors="coerce", utc=True)
+    empty_ret_ts = pd.to_datetime(df_delay["empty_container_return_date"], errors="coerce", utc=True)
+
+    actual_fd_ts = delivery_ts.copy()
+    use_empty = actual_fd_ts.isna() & empty_ret_ts.notna()
+    actual_fd_ts[use_empty] = empty_ret_ts[use_empty]
+
+    delayed_fd, fd_dur = _compute_delay_core(planned_fd_ts, actual_fd_ts, TODAY_TS)
+    df_delay["delayed_fd"] = delayed_fd
+    df_delay["fd_delayed_dur"] = fd_dur
+
+    logger.info("FD delay status distribution:")
+    logger.info(df_delay["delayed_fd"].value_counts(dropna=False).to_dict())
+
+    # Update canonical frame
+    clean_df = df_delay
+
+    logger.info(f"Unified delay metrics added. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "eta_dp_date",
+                "optimal_ata_dp_date",
+                "derived_ata_dp_date",
+                "delayed_dp",
+                "dp_delayed_dur",
+                "optimal_eta_fd_date",
+                "delivery_to_consignee_date",
+                "empty_container_return_date",
+                "delayed_fd",
+                "fd_delayed_dur",
+            ]
+        ].head(15)
+    )
+
+    logger.info("Unified DP and FD delay metrics step completed successfully.")
+
+except Exception as e:
+    logger.error(f"Unified DP and FD delay metrics step failed: {e}", exc_info=True)
+    raise
+
+
+# In[17]:
+
+
+display(
+    clean_df[
+        [
+            "carr_eqp_uid",
+            "eta_dp_date",
+            "optimal_ata_dp_date",
+            "derived_ata_dp_date",
+            "delayed_dp",
+            "dp_delayed_dur",
+            "optimal_eta_fd_date",
+            "delivery_to_consignee_date",
+            "empty_container_return_date",
+            "delayed_fd",
+            "fd_delayed_dur",
+        ]
+    ].sample(2)
+)
+
+
+# In[18]:
+
+
+# STEP 5-6
+
+#  — Stage-wise critical_dates_summary (POR→LP→TS→DP→Last CY→Final)
+
+try:
+    logger.info("Starting Step 5-6: Stage-wise 'critical_dates_summary'")
+
+    TODAY_DATE = pd.Timestamp.utcnow().normalize().date()
+
+    def _to_date_or_none(val):
+        """Convert a scalar to date or None, handling pandas <NA>, 'nan', etc."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        s = str(val).strip()
+        if not s or s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.date()
+
+    def _norm_loc(v):
+        """Normalize location text (POR, ports, CY, destinations)."""
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        if not s or s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        return s
+
+    def _fmt_date(dt_val):
+        """Return YYYY-MM-DD or 'N/A'."""
+        d = _to_date_or_none(dt_val)
+        return d.isoformat() if d else "N/A"
+
+    def _fmt_delay_short(status, days):
+        """
+        Short delay descriptor for one leg using our existing DP/FD delay fields.
+        status: 'delay' | 'early' | 'on_time' | 'unknown'
+        days: float/int or NaN
+        """
+        if status is None or (isinstance(status, float) and pd.isna(status)):
+            status = "unknown"
+        s = str(status).strip().lower()
+
+        if days is None or (isinstance(days, float) and pd.isna(days)):
+            if s == "unknown":
+                return "delay: unknown"
+            return f"delay: {s}"
+
+        d = int(days)
+        if s == "delay":
+            return f"delayed by {d}d"
+        if s == "early":
+            return f"early by {abs(d)}d"
+        if s == "on_time":
+            return "on time"
+        return f"{s} (Δ={d}d)"
+
+    def derive_critical_dates_summary(row: pd.Series) -> str:
+        """
+        Leg-wise critical date view:
+
+        L1: Place of Receipt -> Load Port
+        L2: Load Port -> Transshipment Port (if any)
+        L3: Transshipment Port -> Discharge Port
+        L4: Discharge Port -> Last CY location
+        L5: Last CY location -> Final destination
+        """
+
+        # ---- Locations ----
+        por   = _norm_loc(row.get("place_of_receipt")) or "POR"
+        lp    = _norm_loc(row.get("load_port")) or "Load Port"
+        ts    = _norm_loc(row.get("final_load_port"))  # can be None
+        dp    = _norm_loc(row.get("discharge_port")) or "Discharge Port"
+        last_cy_lcn   = _norm_loc(row.get("equipment_arrived_at_last_cy_lcn")) or "Last CY"
+        out_cy_lcn    = _norm_loc(row.get("out_gate_at_last_cy_lcn")) or last_cy_lcn
+        pod           = _norm_loc(row.get("place_of_delivery"))
+        final_dest    = _norm_loc(row.get("final_destination")) or pod or "Final Destination"
+
+        # ---- Dates (all converted safely) ----
+        etd_lp   = _to_date_or_none(row.get("etd_lp_date"))
+        atd_lp   = _to_date_or_none(row.get("atd_lp_date"))
+
+        ata_flp  = _to_date_or_none(row.get("ata_flp_date"))
+        atd_flp  = _to_date_or_none(row.get("atd_flp_date"))
+
+        eta_dp   = _to_date_or_none(row.get("eta_dp_date"))
+        ata_dp   = _to_date_or_none(row.get("optimal_ata_dp_date"))
+
+        out_dp   = _to_date_or_none(row.get("out_gate_from_dp_date"))
+
+        equip_arr_cy = _to_date_or_none(row.get("equipment_arrived_at_last_cy_date"))
+        out_cy       = _to_date_or_none(row.get("out_gate_at_last_cy_date"))
+
+        eta_fd   = _to_date_or_none(row.get("optimal_eta_fd_date"))
+        delivery = _to_date_or_none(row.get("delivery_to_consignee_date"))
+        empty_rt = _to_date_or_none(row.get("empty_container_return_date"))
+
+        delayed_dp = row.get("delayed_dp")
+        dp_dur     = row.get("dp_delayed_dur")
+        delayed_fd = row.get("delayed_fd")
+        fd_dur     = row.get("fd_delayed_dur")
+
+        legs: list[str] = []
+
+        # -------------------------
+        # Stage 1: POR -> Load Port
+        # -------------------------
+        if etd_lp and atd_lp:
+            delta = (atd_lp - etd_lp).days
+            if delta > 0:
+                comment = f"departed {delta}d after ETD"
+            elif delta < 0:
+                comment = f"departed {abs(delta)}d earlier than ETD"
+            else:
+                comment = "departed on planned ETD"
+        elif etd_lp and not atd_lp:
+            if etd_lp < TODAY_DATE:
+                comment = "planned ETD passed; actual departure not recorded"
+            else:
+                comment = "departure scheduled; actual not yet recorded"
+        elif not etd_lp and atd_lp:
+            comment = "departed; planned ETD not recorded"
+        else:
+            comment = "no ETD/ATD on record"
+
+        legs.append(
+            f"Stage 1 (POR → Load Port): {por} → {lp} "
+            f"(ETD={etd_lp.isoformat() if etd_lp else 'N/A'}, "
+            f"ATD={atd_lp.isoformat() if atd_lp else 'N/A'}; {comment})"
+        )
+
+        # -------------------------
+        # Stage 2: Load Port -> Transshipment Port (if exists)
+        # -------------------------
+        if ts:
+            if ata_flp and atd_flp:
+                comment2 = (
+                    f"arrived {ata_flp.isoformat()}, departed {atd_flp.isoformat()}"
+                )
+            elif ata_flp and not atd_flp:
+                comment2 = f"arrived {ata_flp.isoformat()}, departure not recorded"
+            elif not ata_flp and atd_flp:
+                comment2 = f"departure {atd_flp.isoformat()}, arrival not recorded"
+            else:
+                comment2 = "no arrival/departure recorded at TS port"
+
+            legs.append(
+                f"Stage 2 (Load Port → TS): {lp} → {ts} ({comment2})"
+            )
+        else:
+            legs.append(
+                f"Stage 2 (Load Port → TS): no transshipment; direct ocean leg from {lp} to {dp}"
+            )
+
+        # -------------------------
+        # Stage 3: Transshipment Port -> Discharge Port
+        # -------------------------
+        # Even if no TS, we still have an ocean leg into DP.
+        dp_delay_str = _fmt_delay_short(delayed_dp, dp_dur)
+        legs.append(
+            f"Stage 3 (TS → Discharge Port): "
+            f"{(ts or lp)} → {dp} "
+            f"(ETA DP={eta_dp.isoformat() if eta_dp else 'N/A'}, "
+            f"ATA DP={ata_dp.isoformat() if ata_dp else 'N/A'}, {dp_delay_str})"
+        )
+
+        # -------------------------
+        # Stage 4: Discharge Port -> Last CY location
+        # -------------------------
+        if out_dp and equip_arr_cy:
+            comment4 = (
+                f"departed DP area on {out_dp.isoformat()}, "
+                f"arrived last CY at {last_cy_lcn} on {equip_arr_cy.isoformat()}"
+            )
+        elif out_dp and not equip_arr_cy:
+            comment4 = (
+                f"departed DP area on {out_dp.isoformat()}, "
+                f"arrival at last CY not recorded"
+            )
+        elif not out_dp and equip_arr_cy:
+            comment4 = (
+                f"arrival at last CY {last_cy_lcn} on {equip_arr_cy.isoformat()}, "
+                f"departure from DP not recorded"
+            )
+        else:
+            comment4 = "no clear DP→CY movement recorded"
+
+        legs.append(
+            f"Stage 4 (DP → Last CY): {dp} → {last_cy_lcn} ({comment4})"
+        )
+
+        # -------------------------
+        # Stage 5: Last CY -> Final Destination
+        # -------------------------
+        fd_delay_str = _fmt_delay_short(delayed_fd, fd_dur)
+        if delivery or empty_rt:
+            # At least some completion event
+            legs.append(
+                "Stage 5 (Last CY → Final): "
+                f"{out_cy_lcn} → {final_dest} "
+                f"(ETA FD={eta_fd.isoformat() if eta_fd else 'N/A'}, "
+                f"Delivery={delivery.isoformat() if delivery else 'N/A'}, "
+                f"Empty return={empty_rt.isoformat() if empty_rt else 'N/A'}, "
+                f"{fd_delay_str})"
+            )
+        else:
+            # No delivery/empty return yet
+            if eta_fd:
+                if eta_fd < TODAY_DATE:
+                    comment5 = "ETA FD passed; delivery/empty return not recorded"
+                else:
+                    comment5 = "delivery still upcoming based on ETA FD"
+            else:
+                comment5 = "no ETA FD, delivery or empty return on record"
+
+            legs.append(
+                "Stage 5 (Last CY → Final): "
+                f"{out_cy_lcn} → {final_dest} "
+                f"(ETA FD={eta_fd.isoformat() if eta_fd else 'N/A'}, "
+                f"{comment5}; {fd_delay_str})"
+            )
+
+        return " || ".join(legs)
+
+    # Apply leg-wise summary
+    clean_df = clean_df.copy()
+    logger.info("Applying leg-wise derive_critical_dates_summary row-wise...")
+    clean_df["critical_dates_summary"] = clean_df.apply(derive_critical_dates_summary, axis=1)
+
+    logger.info(f"Leg-wise critical_dates_summary added. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "delayed_dp",
+                "dp_delayed_dur",
+                "delayed_fd",
+                "fd_delayed_dur",
+                "critical_dates_summary",
+            ]
+        ].head(2)
+    )
+
+    logger.info("Stage-wise critical dates step completed successfully.")
+
+except Exception as e:
+    logger.error(f"Stage-wise critical dates step failed: {e}", exc_info=True)
+    raise
+
+
+# In[19]:
+
+
+display(
+    clean_df[
+        [
+            "carr_eqp_uid",
+            "delayed_dp",
+            "dp_delayed_dur",
+            "delayed_fd",
+            "fd_delayed_dur",
+            "critical_dates_summary",
+        ]
+    ].sample(2)
+)
+
+
+# In[20]:
+
+
+# Step 5-7 — Delay reason + workflow gap inference
+# Creates:
+#   delay_reason_summary  (text)
+#   workflow_gap_flags    (comma-separated tags)
+
+try:
+    logger.info("Starting Step 5-7: deriving 'delay_reason_summary' and 'workflow_gap_flags'")
+
+    TODAY_DATE = pd.Timestamp.utcnow().normalize().date()
+
+    def _to_date_or_none(val):
+        """Convert scalar to python date or None (handles pandas NA, 'nan', etc.)."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        s = str(val).strip()
+        if not s or s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.date()
+
+    def _days_diff(later, earlier):
+        """Return (later - earlier).days or None if either is missing."""
+        if later is None or earlier is None:
+            return None
+        try:
+            return (later - earlier).days
+        except Exception:
+            return None
+
+    def derive_delay_reason_and_gaps(row: pd.Series) -> tuple[str, str]:
+        """
+        Infer:
+          - human-readable delay_reason_summary
+          - machine-friendly workflow_gap_flags (comma-separated tags)
+        """
+
+        reasons: list[str] = []
+        gaps: list[str] = []
+
+        # ---- Dates (all as python date) ----
+        etd_lp   = _to_date_or_none(row.get("etd_lp_date"))
+        atd_lp   = _to_date_or_none(row.get("atd_lp_date"))
+
+        ata_flp  = _to_date_or_none(row.get("ata_flp_date"))
+        atd_flp  = _to_date_or_none(row.get("atd_flp_date"))
+
+        eta_dp   = _to_date_or_none(row.get("eta_dp_date"))
+        ata_dp   = _to_date_or_none(row.get("optimal_ata_dp_date"))
+        out_dp   = _to_date_or_none(row.get("out_gate_from_dp_date"))
+
+        equip_arr_cy = _to_date_or_none(row.get("equipment_arrived_at_last_cy_date"))
+        out_cy       = _to_date_or_none(row.get("out_gate_at_last_cy_date"))
+
+        eta_fd   = _to_date_or_none(row.get("optimal_eta_fd_date"))
+        delivery = _to_date_or_none(row.get("delivery_to_consignee_date"))
+        empty_rt = _to_date_or_none(row.get("empty_container_return_date"))
+
+        ts_port  = str(row.get("final_load_port")) if pd.notna(row.get("final_load_port")) else None
+
+        # ---- Existing delay metrics ----
+        delayed_dp = str(row.get("delayed_dp")).lower() if row.get("delayed_dp") is not None else "unknown"
+        dp_dur     = row.get("dp_delayed_dur")
+        delayed_fd = str(row.get("delayed_fd")).lower() if row.get("delayed_fd") is not None else "unknown"
+        fd_dur     = row.get("fd_delayed_dur")
+
+        # Normalize durations
+        dp_days = None if (dp_dur is None or (isinstance(dp_dur, float) and pd.isna(dp_dur))) else int(dp_dur)
+        fd_days = None if (fd_dur is None or (isinstance(fd_dur, float) and pd.isna(fd_dur))) else int(fd_dur)
+
+        # ---- Leg-level raw deltas (for more granular hints) ----
+        origin_delta   = _days_diff(atd_lp, etd_lp)                     # load port departure vs planned
+        ts_dwell       = _days_diff(atd_flp, ata_flp)                   # time at TS between arrival & departure
+        dp_to_cy_delta = _days_diff(equip_arr_cy or out_cy, out_dp or ata_dp)
+        cy_to_final_delta = _days_diff(
+            delivery or empty_rt or eta_fd,
+            equip_arr_cy or out_cy
+        )
+
+        # ==========================
+        # 1) Reasons tied to DP delay
+        # ==========================
+        if delayed_dp == "delay" and dp_days is not None and dp_days > 0:
+            reasons.append(
+                f"Ocean / discharge-port leg is delayed versus ETA at DP by ~{dp_days} day(s)."
+            )
+
+            # Origin contribution
+            if origin_delta is not None and origin_delta > 1:
+                reasons.append(
+                    f"Departure from load port occurred ~{origin_delta} day(s) after planned ETD; this likely contributed to DP delay."
+                )
+
+            # Transshipment dwell contribution
+            if ts_port and ts_dwell is not None and ts_dwell > 1:
+                reasons.append(
+                    f"Transshipment dwell at {ts_port} is ~{ts_dwell} day(s) between arrival and departure, suggesting connection / handling delay."
+                )
+
+            # If neither origin nor TS shows big delays, blame ocean/DP window
+            if (
+                (origin_delta is None or origin_delta <= 1)
+                and (ts_dwell is None or ts_dwell <= 1)
+            ):
+                reasons.append(
+                    "DP delay is primarily between last loaded leg and discharge port (ocean transit and/or discharge port operations)."
+                )
+
+        # ==========================
+        # 2) Reasons tied to FD delay
+        # ==========================
+        if delayed_fd == "delay" and fd_days is not None and fd_days > 0:
+            reasons.append(
+                f"Final delivery leg (post-DP) is delayed versus ETA at final destination by ~{fd_days} day(s)."
+            )
+
+            if dp_to_cy_delta is not None and dp_to_cy_delta > 1:
+                reasons.append(
+                    f"Movement from discharge port to last CY took ~{dp_to_cy_delta} day(s), higher than typical inland transfer time."
+                )
+
+            if cy_to_final_delta is not None and cy_to_final_delta > 1:
+                reasons.append(
+                    f"Last-mile from last CY to final destination / empty return took ~{cy_to_final_delta} day(s), indicating inland / delivery-side delay."
+                )
+
+        # ==========================
+        # 3) If no positive delay, summarise
+        # ==========================
+        if not reasons:
+            if (
+                (dp_days is not None and dp_days < 0)
+                or (fd_days is not None and fd_days < 0)
+            ):
+                reasons.append(
+                    "Shipment is early versus at least one of DP or final destination ETAs."
+                )
+            elif (
+                (dp_days is not None and dp_days == 0)
+                or (fd_days is not None and fd_days == 0)
+            ):
+                reasons.append(
+                    "Shipment is on time against configured DP / final destination ETAs."
+                )
+            else:
+                reasons.append(
+                    "No significant delay can be inferred versus configured ETAs based on available events."
+                )
+
+        # ==========================
+        # 4) Workflow / data gap flags
+        # ==========================
+        # Missing ATD from load port but later events exist
+        if atd_lp is None and any([ata_flp, atd_flp, ata_dp, out_dp, equip_arr_cy, out_cy, delivery, empty_rt]):
+            gaps.append("missing_atd_lp")
+
+        # Transshipment port configured but no arrival/departure, while later legs exist
+        if ts_port and (ata_flp is None and atd_flp is None) and any([ata_dp, out_dp, equip_arr_cy, out_cy, delivery, empty_rt]):
+            gaps.append("missing_ts_events")
+
+        # ATA DP present or ETA DP defined, but no DP out-gate while inland/CY events exist
+        if (eta_dp or ata_dp) and (out_dp is None) and any([equip_arr_cy, out_cy, delivery, empty_rt]):
+            gaps.append("missing_out_gate_from_dp")
+
+        # Last CY arrival missing but later events exist
+        if equip_arr_cy is None and any([out_cy, delivery, empty_rt]):
+            gaps.append("missing_cy_arrival")
+
+        # ETA FD missing but final events exist
+        if eta_fd is None and any([delivery, empty_rt]):
+            gaps.append("missing_eta_fd")
+
+        # ETA DP missing but ATA DP exists
+        if eta_dp is None and ata_dp is not None:
+            gaps.append("missing_eta_dp")
+
+        # Empty container returned but no delivery recorded
+        if delivery is None and empty_rt is not None:
+            gaps.append("missing_delivery_event_with_empty_return")
+
+        reason_text = "; ".join(reasons)
+        gap_text = ", ".join(sorted(set(gaps))) if gaps else "none_detected"
+
+        return reason_text, gap_text
+
+    def _wrap_delay_reason(row: pd.Series) -> pd.Series:
+        reason, gap_flags = derive_delay_reason_and_gaps(row)
+        return pd.Series(
+            {"delay_reason_summary": reason, "workflow_gap_flags": gap_flags}
+        )
+
+    clean_df = clean_df.copy()
+    logger.info("Applying delay_reason_summary + workflow_gap_flags row-wise...")
+    extra_cols = clean_df.apply(_wrap_delay_reason, axis=1)
+    clean_df = pd.concat([clean_df, extra_cols], axis=1)
+
+    logger.info(f"delay_reason_summary & workflow_gap_flags added. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "delayed_dp",
+                "dp_delayed_dur",
+                "delayed_fd",
+                "fd_delayed_dur",
+                "delay_reason_summary",
+                "workflow_gap_flags",
+            ]
+        ].head(1)
+    )
+
+    logger.info("Delay reason & workflow gap inference cell completed successfully.")
+
+except Exception as e:
+    logger.error(f"Delay reason & workflow gaps cell failed: {e}", exc_info=True)
+    raise
+
+
+# In[21]:
+
+
+display(
+    clean_df[
+        [
+            "carr_eqp_uid",
+            "delayed_dp",
+            "dp_delayed_dur",
+            "delayed_fd",
+            "fd_delayed_dur",
+            "delay_reason_summary",
+            "workflow_gap_flags",
+        ]
+    ].sample(5)
+)
+
+
+# In[22]:
+
+
+# STEP 5-8 — Milestones (stage-wise) for each shipment (with explicit empty return)
+
+try:
+    logger.info("Starting step 5-8: deriving 'milestones' (stage-wise, with empty return)")
+
+    TODAY_DATE = pd.Timestamp.utcnow().normalize().date()
+
+    def _to_date_or_none(val):
+        """Convert scalar to python date or None, handling pandas NA / 'nan' / '<NA>'."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        s = str(val).strip()
+        if not s or s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.date()
+
+    def _norm_loc(v):
+        """Normalize location text (POR, ports, CY, destinations)."""
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        if not s or s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        return s
+
+    def derive_milestones(row: pd.Series) -> str:
+        """
+        Build a compact, stage-wise milestone string for the shipment across:
+
+          Leg 1: Place of Receipt -> Load Port
+          Leg 2: Load Port -> Transshipment Port (if exists)
+          Leg 3: Transshipment Port -> Discharge Port
+          Leg 4: Discharge Port -> Last CY location
+          Leg 5: Last CY location -> Final destination + Empty container return
+        """
+
+        status = str(row.get("shipment_status") or "UNKNOWN").upper()
+
+        # ---- Locations ----
+        por   = _norm_loc(row.get("place_of_receipt")) or "POR"
+        lp    = _norm_loc(row.get("load_port")) or "Load Port"
+        ts    = _norm_loc(row.get("final_load_port"))
+        dp    = _norm_loc(row.get("discharge_port")) or "Discharge Port"
+        last_cy_lcn = _norm_loc(row.get("equipment_arrived_at_last_cy_lcn")) or "Last CY"
+        out_cy_lcn  = _norm_loc(row.get("out_gate_at_last_cy_lcn")) or last_cy_lcn
+        pod         = _norm_loc(row.get("place_of_delivery"))
+        final_dest  = _norm_loc(row.get("final_destination")) or pod or "Final Destination"
+
+        # ---- Dates ----
+        etd_lp   = _to_date_or_none(row.get("etd_lp_date"))
+        atd_lp   = _to_date_or_none(row.get("atd_lp_date"))
+
+        ata_flp  = _to_date_or_none(row.get("ata_flp_date"))
+        atd_flp  = _to_date_or_none(row.get("atd_flp_date"))
+
+        eta_dp   = _to_date_or_none(row.get("eta_dp_date"))
+        ata_dp   = _to_date_or_none(row.get("optimal_ata_dp_date"))
+
+        out_dp   = _to_date_or_none(row.get("out_gate_from_dp_date"))
+
+        equip_arr_cy = _to_date_or_none(row.get("equipment_arrived_at_last_cy_date"))
+        out_cy       = _to_date_or_none(row.get("out_gate_at_last_cy_date"))
+
+        eta_fd   = _to_date_or_none(row.get("optimal_eta_fd_date"))
+        delivery = _to_date_or_none(row.get("delivery_to_consignee_date"))
+        empty_rt = _to_date_or_none(row.get("empty_container_return_date"))
+
+        delayed_dp = str(row.get("delayed_dp") or "unknown").lower()
+        dp_dur     = row.get("dp_delayed_dur")
+        dp_days    = None if (dp_dur is None or (isinstance(dp_dur, float) and pd.isna(dp_dur))) else int(dp_dur)
+
+        delayed_fd = str(row.get("delayed_fd") or "unknown").lower()
+        fd_dur     = row.get("fd_delayed_dur")
+        fd_days    = None if (fd_dur is None or (isinstance(fd_dur, float) and pd.isna(fd_dur))) else int(fd_dur)
+
+        leg_msgs: list[str] = []
+
+        # =========================
+        # Leg 1: POR -> Load Port
+        # =========================
+        if atd_lp:
+            leg1_state = "COMPLETED"
+            leg1_desc = f"departed {lp} on {atd_lp.isoformat()} (origin leg closed)."
+        elif etd_lp:
+            if etd_lp < TODAY_DATE:
+                leg1_state = "INCOMPLETE"
+                leg1_desc = f"ETD {etd_lp.isoformat()} passed; actual departure not recorded."
+            else:
+                leg1_state = "PLANNED"
+                leg1_desc = f"planned ETD {etd_lp.isoformat()} from {lp}."
+        else:
+            leg1_state = "UNKNOWN"
+            leg1_desc = "no ETD/ATD recorded for origin leg."
+
+        leg_msgs.append(
+            f"Leg 1 (POR → Load Port) [{leg1_state}]: {por} → {lp}; {leg1_desc}"
+        )
+
+        # =========================
+        # Leg 2: Load Port -> TS (if exists)
+        # =========================
+        if ts:
+            if atd_flp or ata_flp:
+                leg2_state = "COMPLETED"
+                leg2_desc_parts = []
+                if ata_flp:
+                    leg2_desc_parts.append(f"arrived at TS {ts} on {ata_flp.isoformat()}")
+                if atd_flp:
+                    leg2_desc_parts.append(f"departed TS on {atd_flp.isoformat()}")
+                if not leg2_desc_parts:
+                    leg2_desc_parts.append("TS leg events present but dates unclear")
+                leg2_desc = "; ".join(leg2_desc_parts)
+            else:
+                leg2_state = "PLANNED"
+                leg2_desc = f"TS at {ts} configured, but no arrival/departure events recorded yet."
+            leg_msgs.append(
+                f"Leg 2 (Load Port → TS) [{leg2_state}]: {lp} → {ts}; {leg2_desc}"
+            )
+        else:
+            leg2_state = "NOT_APPLICABLE"
+            leg2_desc  = f"no transshipment; direct ocean leg from {lp} to {dp}."
+            leg_msgs.append(
+                f"Leg 2 (Load Port → TS) [{leg2_state}]: {leg2_desc}"
+            )
+
+        # =========================
+        # Leg 3: TS -> Discharge Port
+        # =========================
+        dp_arrived = ata_dp is not None and ata_dp <= TODAY_DATE
+
+        if dp_arrived:
+            leg3_state = "COMPLETED"
+            if delayed_dp == "delay" and dp_days is not None and dp_days > 0:
+                delay_txt = f"delayed into {dp} by ~{dp_days} day(s) vs ETA DP."
+            elif delayed_dp == "early" and dp_days is not None and dp_days < 0:
+                delay_txt = f"arrived earlier into {dp} by ~{abs(dp_days)} day(s) vs ETA DP."
+            elif delayed_dp == "on_time":
+                delay_txt = "arrived on time vs ETA DP."
+            else:
+                delay_txt = "arrival vs ETA DP not clearly classified."
+            leg3_desc = (
+                f"ocean leg into {dp} completed on {ata_dp.isoformat()} ({delay_txt})"
+            )
+        else:
+            if eta_dp:
+                if eta_dp < TODAY_DATE:
+                    leg3_state = "OVERDUE"
+                    leg3_desc  = (
+                        f"ETA DP {eta_dp.isoformat()} passed; actual arrival at {dp} not recorded."
+                    )
+                else:
+                    leg3_state = "IN_PROGRESS"
+                    leg3_desc  = f"in ocean transit towards {dp} (ETA DP {eta_dp.isoformat()})."
+            else:
+                leg3_state = "UNKNOWN"
+                leg3_desc  = "no ETA/ATA DP recorded."
+
+        leg_msgs.append(
+            f"Leg 3 (TS → Discharge Port) [{leg3_state}]: {(ts or lp)} → {dp}; {leg3_desc}"
+        )
+
+        # =========================
+        # Leg 4: DP -> Last CY
+        # =========================
+        if equip_arr_cy or out_cy or out_dp:
+            if equip_arr_cy and out_dp:
+                leg4_state = "COMPLETED"
+                leg4_desc  = (
+                    f"departed DP area on {out_dp.isoformat()}, "
+                    f"arrived last CY {last_cy_lcn} on {equip_arr_cy.isoformat()}."
+                )
+            elif equip_arr_cy and not out_dp:
+                leg4_state = "PARTIAL"
+                leg4_desc  = (
+                    f"arrival at last CY {last_cy_lcn} on {equip_arr_cy.isoformat()}, "
+                    "DP out-gate not recorded."
+                )
+            elif out_dp and not equip_arr_cy:
+                leg4_state = "PARTIAL"
+                leg4_desc  = (
+                    f"departed DP area on {out_dp.isoformat()}, "
+                    "arrival at last CY not recorded."
+                )
+            else:
+                leg4_state = "IN_PROGRESS"
+                leg4_desc  = "inland movement between DP and last CY inferred but not fully timestamped."
+        else:
+            if status in {"IN_INLAND_TRANSIT", "AT_LAST_CY", "DELIVERED", "EMPTY_RETURNED"}:
+                leg4_state = "UNKNOWN"
+                leg4_desc  = "status suggests DP→CY leg happened, but events are missing."
+            else:
+                leg4_state = "PLANNED"
+                leg4_desc  = "no DP→CY movement recorded yet."
+
+        leg_msgs.append(
+            f"Leg 4 (DP → Last CY) [{leg4_state}]: {dp} → {last_cy_lcn}; {leg4_desc}"
+        )
+
+        # =========================
+        # Leg 5: Last CY -> Final + Empty container return
+        # =========================
+        has_delivery = delivery is not None
+        has_empty    = empty_rt is not None
+        completed_final = has_delivery or has_empty
+
+        if completed_final:
+            leg5_state = "COMPLETED"
+
+            # Delay text from FD metrics
+            if delayed_fd == "delay" and fd_days is not None and fd_days > 0:
+                delay_txt = f"delayed by ~{fd_days} day(s) vs ETA FD."
+            elif delayed_fd == "early" and fd_days is not None and fd_days < 0:
+                delay_txt = f"completed earlier by ~{abs(fd_days)} day(s) vs ETA FD."
+            elif delayed_fd == "on_time":
+                delay_txt = "on time vs ETA FD."
+            else:
+                delay_txt = "completion vs ETA FD not clearly classified."
+
+            details: list[str] = []
+            if has_delivery:
+                details.append(
+                    f"delivered to {final_dest} on {delivery.isoformat()}"
+                )
+            if has_empty:
+                details.append(
+                    f"empty container returned on {empty_rt.isoformat()}"
+                )
+
+            if not details:
+                details.append("final events recorded")
+
+            leg5_desc = "; ".join(details) + f" ({delay_txt})"
+
+        else:
+            # Not completed yet (no delivery, no empty return)
+            if eta_fd:
+                if eta_fd < TODAY_DATE:
+                    leg5_state = "OVERDUE"
+                    leg5_desc  = (
+                        f"ETA FD {eta_fd.isoformat()} passed; "
+                        "delivery and empty container return not yet recorded."
+                    )
+                else:
+                    leg5_state = "PLANNED"
+                    leg5_desc  = (
+                        f"delivery and empty container return pending; "
+                        f"ETA FD {eta_fd.isoformat()}."
+                    )
+            else:
+                leg5_state = "UNKNOWN"
+                leg5_desc  = "no ETA FD, delivery or empty container return information."
+
+        leg_msgs.append(
+            f"Leg 5 (Last CY → Final) [{leg5_state}]: {out_cy_lcn} → {final_dest}; {leg5_desc}"
+        )
+
+        header = f"Overall shipment status: {status}"
+
+        return " || ".join([header] + leg_msgs)
+
+    # Apply milestones
+    clean_df = clean_df.copy()
+    logger.info("Applying derive_milestones (with empty return) row-wise...")
+    clean_df["milestones"] = clean_df.apply(derive_milestones, axis=1)
+
+    logger.info(f"'milestones' column (with empty return) created. clean_df shape: {clean_df.shape}")
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "shipment_status",
+                "delayed_dp",
+                "dp_delayed_dur",
+                "delayed_fd",
+                "fd_delayed_dur",
+                "milestones",
+            ]
+        ].head(2)
+    )
+
+    logger.info("Milestones step (with empty return) completed successfully.")
+
+except Exception as e:
+    logger.error(f"Milestones step (with empty return) failed: {e}", exc_info=True)
+    raise
+
+
+# In[23]:
+
+
+display(
+    clean_df[
+        [
+            "carr_eqp_uid",
+            "shipment_status",
+            "delayed_dp",
+            "dp_delayed_dur",
+            "delayed_fd",
+            "fd_delayed_dur",
+            "milestones",
+        ]
+    ].sample(5)
+)
+
+
+# ## End of data preprocessing...
+
+# ## data partitioning using etd_lp_date by mmmyy wat i.e. shipment_may25
+
+# In[24]:
+
+
+# Step 6 — Source month tag & group for JSONL partitioning
+# Adds:
+#   source_month_tag  (e.g. "mar25", "apr25", "unknown")
+#   source_group      (e.g. "shipment_mar25")
+
+try:
+    logger.info("Starting CELL: deriving source_month_tag and source_group")
+
+    # 1) Build a single 'base date' per row with fallback chain
+    #    priority: etd_lp_date -> optimal_ata_dp_date -> optimal_eta_fd_date
+    etd_lp_ts   = pd.to_datetime(clean_df["etd_lp_date"], errors="coerce", utc=True)
+    # ata_dp_ts   = pd.to_datetime(clean_df["optimal_ata_dp_date"], errors="coerce", utc=True)
+    # eta_fd_ts   = pd.to_datetime(clean_df["optimal_eta_fd_date"], errors="coerce", utc=True)
+
+    base_date_ts = etd_lp_ts.copy()
+    # base_date_ts = base_date_ts.fillna(ata_dp_ts)
+    # base_date_ts = base_date_ts.fillna(eta_fd_ts)
+
+    # 2) Format as "mmm_yy" style tag (e.g. mar25) in lowercase
+    #    Rows with no usable base date become "unknown"
+    month_tag = base_date_ts.dt.strftime("%b%y")  # e.g. 'Mar25'
+    month_tag = month_tag.str.lower()             # 'mar25'
+    month_tag = month_tag.fillna("unknown")
+
+    clean_df = clean_df.copy()
+    clean_df["source_month_tag"] = month_tag
+    clean_df["source_group"] = "shipment_" + clean_df["source_month_tag"]  # e.g. 'shipment_mar25'
+
+    logger.info("source_month_tag / source_group derived.")
+    logger.info("source_month_tag distribution (top 10):")
+    logger.info(clean_df["source_month_tag"].value_counts(dropna=False).head(10).to_dict())
+
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "etd_lp_date",
+                "optimal_ata_dp_date",
+                "optimal_eta_fd_date",
+                "source_month_tag",
+                "source_group",
+            ]
+        ].head(15)
+    )
+
+    logger.info("Source month / group cell completed successfully.")
+
+except Exception as e:
+    logger.error(f"Source month / group cell failed: {e}", exc_info=True)
+    raise
+
+
+# In[25]:
+
+
+display(
+    clean_df[
+        [
+            "carr_eqp_uid",
+            "etd_lp_date",
+            "optimal_ata_dp_date",
+            "optimal_eta_fd_date",
+            "source_month_tag",
+            "source_group",
+        ]
+    ].sample(15)
+)
+
+
+# In[26]:
+
+
+for col in clean_df.columns:
+    print(col)
+
+
+# ## building ultimate combined text for ai-search
+
+# In[27]:
+
+
+# CELL — Rebuild combined_text as per new spec + build JSONL-ready docs_df
+
+try:
+    logger.info("Starting CELL: rebuild combined_content and construct docs_df")
+
+    def _safe_text(val) -> str | None:
+        """
+        Convert value to clean text or None.
+        Avoids 'nan', 'None', '<NA>' noise.
+        """
+        if val is None:
+            return None
+        if isinstance(val, float) and pd.isna(val):
+            return None
+        s = str(val).strip()
+        if not s:
+            return None
+        if s.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        return s
+
+    def _join_nonempty(parts, sep: str = " "):
+        parts = [p for p in parts if p is not None and str(p).strip() != ""]
+        if not parts:
+            return None
+        return sep.join(parts)
+
+    def build_combined_content(row: pd.Series) -> str:
+        """
+        Ultimate combined text for RAG, with constraints:
+        - NO carr_eqp_uid or job_no in the text.
+        - Only consignee_name appears (no consignee_codes).
+        - Rail events and readiness/compliance are included if present.
+        """
+
+        sections: list[str] = []
+
+        # ===== 1. High-level header (no carr_eqp_uid, no job_no) =====
+        container    = _safe_text(row.get("container_number"))
+        status       = _safe_text(row.get("shipment_status")) or "UNKNOWN"
+        consignee    = _safe_text(row.get("consignee_name"))
+
+        header_bits = []
+        if container:
+            header_bits.append(f"Container: {container}")
+        if consignee:
+            header_bits.append(f"Consignee: {consignee}")
+        header_bits.append(f"Current shipment status: {status}")
+
+        header = " | ".join(header_bits)
+        sections.append(header)
+
+        # ===== 2. Parties & service (only consignee_name, no codes) =====
+        ship_to         = _safe_text(row.get("ship_to_party_name"))
+        supplier        = _safe_text(row.get("supplier_vendor_name"))
+        manufacturer    = _safe_text(row.get("manufacturer_name"))
+        job_type        = _safe_text(row.get("job_type"))
+        svc             = _safe_text(row.get("destination_service"))
+        transport_mode  = _safe_text(row.get("transport_mode"))
+        hot_flag        = _safe_text(row.get("hot_container_flag"))
+        booking_status  = _safe_text(row.get("booking_approval_status"))
+
+        party_lines = []
+
+        if consignee:
+            party_lines.append(f"Consignee: {consignee}")
+        if ship_to:
+            party_lines.append(f"Ship-to party: {ship_to}")
+        if supplier:
+            party_lines.append(f"Supplier/Vendor: {supplier}")
+        if manufacturer:
+            party_lines.append(f"Manufacturer: {manufacturer}")
+
+        svc_bits = []
+        if job_type:
+            svc_bits.append(f"Job type: {job_type}")
+        if svc:
+            svc_bits.append(f"Destination service: {svc}")
+        if transport_mode:
+            svc_bits.append(f"Transport mode: {transport_mode}")
+        if hot_flag:
+            svc_bits.append(f"Hot container flag: {hot_flag}")
+        if booking_status:
+            svc_bits.append(f"Booking approval status: {booking_status}")
+        if svc_bits:
+            party_lines.append(" | ".join(svc_bits))
+
+        if party_lines:
+            sections.append("Parties & service: " + " | ".join(party_lines))
+
+        # ===== 3. Routing, vessels, carriers + RAIL LEG =====
+        origin      = _safe_text(row.get("place_of_receipt")) or _safe_text(row.get("load_port"))
+        load_port   = _safe_text(row.get("load_port"))
+        ts_port     = _safe_text(row.get("final_load_port"))
+        dp_port     = _safe_text(row.get("discharge_port"))
+        delivery_at = _safe_text(row.get("place_of_delivery"))
+        final_dest  = _safe_text(row.get("final_destination"))
+
+        port_route_summary = _safe_text(row.get("port_route_summary"))
+        vessel_summary     = _safe_text(row.get("vessel_summary"))
+        carrier_summary    = _safe_text(row.get("carrier_summary"))
+
+        # Rail events (optional but supported)
+        rail_load_date  = _safe_text(row.get("rail_load_dp_date"))
+        rail_load_lcn   = _safe_text(row.get("rail_load_dp_lcn"))
+        rail_dep_date   = _safe_text(row.get("rail_departure_dp_date"))
+        rail_dep_lcn    = _safe_text(row.get("rail_departure_dp_lcn"))
+        rail_arr_date   = _safe_text(row.get("rail_arrival_destination_date"))
+        rail_arr_lcn    = _safe_text(row.get("rail_arrival_destination_lcn"))
+
+        routing_bits = []
+
+        routing_core = _join_nonempty(
+            [
+                f"Origin: {origin}" if origin else None,
+                f"Load Port: {load_port}" if load_port else None,
+                f"Transshipment Port: {ts_port}" if ts_port else None,
+                f"Discharge Port: {dp_port}" if dp_port else None,
+                f"Place of Delivery: {delivery_at}" if delivery_at else None,
+                f"Final Destination: {final_dest}" if final_dest else None,
+            ],
+            sep=" | ",
+        )
+        if routing_core:
+            routing_bits.append(routing_core)
+
+        if port_route_summary:
+            routing_bits.append(f"Route summary: {port_route_summary}")
+        if vessel_summary:
+            routing_bits.append(f"Vessel summary: {vessel_summary}")
+        if carrier_summary:
+            routing_bits.append(f"Carrier summary: {carrier_summary}")
+
+        # Rail leg description if we have at least one rail event
+        if any([rail_load_date, rail_load_lcn, rail_dep_date, rail_dep_lcn, rail_arr_date, rail_arr_lcn]):
+            rail_parts = []
+            if rail_load_date or rail_load_lcn:
+                rail_parts.append(
+                    _join_nonempty(
+                        [
+                            "Loaded on rail at",
+                            rail_load_lcn,
+                            f"on {rail_load_date}" if rail_load_date else None,
+                        ]
+                    )
+                )
+            if rail_dep_date or rail_dep_lcn:
+                rail_parts.append(
+                    _join_nonempty(
+                        [
+                            "Rail departure from",
+                            rail_dep_lcn,
+                            f"on {rail_dep_date}" if rail_dep_date else None,
+                        ]
+                    )
+                )
+            if rail_arr_date or rail_arr_lcn:
+                rail_parts.append(
+                    _join_nonempty(
+                        [
+                            "Rail arrival at",
+                            rail_arr_lcn,
+                            f"on {rail_arr_date}" if rail_arr_date else None,
+                        ]
+                    )
+                )
+            rail_desc = "; ".join([p for p in rail_parts if p])
+            if rail_desc:
+                routing_bits.append("Rail movement: " + rail_desc)
+
+        if routing_bits:
+            sections.append("Routing & movements: " + " || ".join(routing_bits))
+
+        # ===== 4. Commercial references =====
+        po_numbers      = _safe_text(row.get("po_numbers"))
+        booking_numbers = _safe_text(row.get("booking_numbers"))
+        fcr_numbers     = _safe_text(row.get("fcr_numbers"))
+        obl_nos         = _safe_text(row.get("obl_nos"))
+        service_contract = _safe_text(row.get("service_contract_number"))
+        mcs_hbl         = _safe_text(row.get("mcs_hbl"))
+
+        ref_bits = []
+        if po_numbers:
+            ref_bits.append(f"PO Numbers: {po_numbers}")
+        if booking_numbers:
+            ref_bits.append(f"Booking Numbers: {booking_numbers}")
+        if fcr_numbers:
+            ref_bits.append(f"FCR Numbers: {fcr_numbers}")
+        if obl_nos:
+            ref_bits.append(f"Ocean BL Numbers: {obl_nos}")
+        if service_contract:
+            ref_bits.append(f"Service contract number: {service_contract}")
+        if mcs_hbl:
+            ref_bits.append(f"MCS HBL: {mcs_hbl}")
+
+        if ref_bits:
+            sections.append("References: " + " | ".join(ref_bits))
+
+        # ===== 5. Status, milestones & delays =====
+        milestones              = _safe_text(row.get("milestones"))
+        delayed_dp              = _safe_text(row.get("delayed_dp"))
+        dp_delay_days           = row.get("dp_delayed_dur")
+        delayed_fd              = _safe_text(row.get("delayed_fd"))
+        fd_delay_days           = row.get("fd_delayed_dur")
+        delay_root_cause        = _safe_text(row.get("delay_root_cause"))
+        critical_dates_summary  = _safe_text(row.get("critical_dates_summary"))
+        delay_reason_summary    = _safe_text(row.get("delay_reason_summary"))
+        workflow_gap_flags      = _safe_text(row.get("workflow_gap_flags"))
+
+        status_lines = []
+
+        delay_bits = []
+        if delayed_dp:
+            if isinstance(dp_delay_days, (int, float)) and not pd.isna(dp_delay_days):
+                delay_bits.append(
+                    f"DP delay status: {delayed_dp}, Δ≈{int(dp_delay_days)} day(s)."
+                )
+            else:
+                delay_bits.append(f"DP delay status: {delayed_dp}.")
+        if delayed_fd:
+            if isinstance(fd_delay_days, (int, float)) and not pd.isna(fd_delay_days):
+                delay_bits.append(
+                    f"FD delay status: {delayed_fd}, Δ≈{int(fd_delay_days)} day(s)."
+                )
+            else:
+                delay_bits.append(f"FD delay status: {delayed_fd}.")
+        if delay_root_cause:
+            delay_bits.append(f"Dominant delay leg: {delay_root_cause}.")
+        if delay_bits:
+            status_lines.append(" | ".join(delay_bits))
+
+        if milestones:
+            status_lines.append(f"Milestones: {milestones}")
+        if critical_dates_summary:
+            status_lines.append(f"Critical dates: {critical_dates_summary}")
+        if delay_reason_summary:
+            status_lines.append(f"Delay analysis: {delay_reason_summary}")
+        if workflow_gap_flags and workflow_gap_flags != "none_detected":
+            status_lines.append(f"Workflow/data gaps: {workflow_gap_flags}")
+
+        if status_lines:
+            sections.append("Status & timeline: " + " || ".join(status_lines))
+
+        # ===== 6. Cargo, CO₂ & readiness/compliance =====
+        weight_kg   = _safe_text(row.get("cargo_weight_kg"))
+        volume_m3   = _safe_text(row.get("cargo_measure_cubic_meter"))
+        cargo_count = _safe_text(row.get("cargo_count"))
+        cargo_um    = _safe_text(row.get("cargo_um"))
+        detail_cnt  = _safe_text(row.get("cargo_detail_count"))
+        detail_um   = _safe_text(row.get("detail_cargo_um"))
+        co2_tank    = _safe_text(row.get("co2_tank_on_wheel"))
+        co2_well    = _safe_text(row.get("co2_well_to_wheel"))
+
+        cargo_bits = []
+        if weight_kg or volume_m3:
+            cargo_bits.append(
+                _join_nonempty(
+                    [
+                        "Cargo metrics:",
+                        f"weight {weight_kg} kg" if weight_kg else None,
+                        f"volume {volume_m3} m3" if volume_m3 else None,
+                    ]
+                )
+            )
+        if cargo_count or cargo_um:
+            cargo_bits.append(
+                _join_nonempty(
+                    [
+                        "Cargo count:",
+                        f"{cargo_count}" if cargo_count else None,
+                        cargo_um,
+                    ]
+                )
+            )
+        if detail_cnt or detail_um:
+            cargo_bits.append(
+                _join_nonempty(
+                    [
+                        "Detail cargo:",
+                        f"{detail_cnt}" if detail_cnt else None,
+                        detail_um,
+                    ]
+                )
+            )
+        if co2_tank or co2_well:
+            cargo_bits.append(
+                _join_nonempty(
+                    [
+                        "CO2 emission:",
+                        f"tank-on-wheel {co2_tank}" if co2_tank else None,
+                        f"well-to-wheel {co2_well}" if co2_well else None,
+                    ]
+                )
+            )
+
+        cargo_bits = [b for b in cargo_bits if b]
+        if cargo_bits:
+            sections.append("Cargo & CO2: " + " | ".join(cargo_bits))
+
+        # Readiness & compliance (future-proof: optional columns)
+        filing_856      = _safe_text(row.get("856_filing_status"))
+        cargo_ready_dt  = _safe_text(row.get("cargo_ready_date"))
+
+        rc_bits = []
+        if cargo_ready_dt:
+            rc_bits.append(f"Cargo ready date: {cargo_ready_dt}")
+        if filing_856:
+            rc_bits.append(f"856 filing status: {filing_856}")
+        if rc_bits:
+            sections.append("Readiness & compliance: " + " | ".join(rc_bits))
+
+        # ===== 7. Final assembly =====
+        sections = [s for s in sections if s and str(s).strip() != ""]
+        if not sections:
+            return "Shipment summary: no structured content available."
+
+        return "\n\n".join(sections)
+
+    # ----- Apply to build combined_content -----
+    clean_df = clean_df.copy()
+    logger.info("Applying updated build_combined_content row-wise...")
+    clean_df["combined_content"] = clean_df.apply(build_combined_content, axis=1)
+
+    # Aliases for consistency with your naming
+    clean_df["combined_text"] = clean_df["combined_content"]
+    clean_df["ultimate_combined_text"] = clean_df["combined_content"]
+
+    logger.info("combined_content / combined_text / ultimate_combined_text updated.")
+
+    # Quick sanity peek
+    display(
+        clean_df[
+            [
+                "carr_eqp_uid",
+                "container_number",
+                "consignee_name",
+                "shipment_status",
+                "combined_content",
+            ]
+        ].head(5)
+    )
+
+
+except Exception as e:
+    logger.error(f"Rebuild combined_content / build docs_df failed: {e}", exc_info=True)
+    raise
+
+
+# In[28]:
+
+
+# print(clean_df.loc[clean_df['carr_eqp_uid'] == '320001076938', 'combined_content'])
+
+
+# In[29]:
+
+
+try:
+    logger.info("Starting CELL: rebuild combined_content and construct docs_df")
+
+    # ===== Build JSONL-ready docs_df =====
+
+    def row_to_doc(row: pd.Series) -> dict:
+        """
+        Map one clean_df row to JSONL document schema:
+
+        {
+          "document_id": <carr_eqp_uid>,
+          "content": <combined_text>,
+          "metadata": { ... all other fields except combined_text variants ... },
+          "consignee_code": <consignee_codes>   # for RLS
+        }
+        """
+        doc_id = row.get("carr_eqp_uid")
+        if pd.isna(doc_id) or doc_id is None:
+            raise ValueError("carr_eqp_uid is null for at least one row; cannot be used as document_id.")
+
+        content = row.get("combined_content")
+        if content is None or (isinstance(content, float) and pd.isna(content)):
+            content = ""
+
+        # Full row dict as metadata
+        meta = row.to_dict()
+
+        # Remove content-like fields from metadata to avoid duplication
+        for drop_key in ["combined_content", "combined_text", "ultimate_combined_text"]:
+            meta.pop(drop_key, None)
+
+        # document_id will be stored as top-level, not inside metadata
+        meta.pop("carr_eqp_uid", None)
+
+        consignee_code_val = row.get("consignee_codes")  # this is your RLS key
+        return {
+            "document_id": str(doc_id),
+            "content": content,
+            "metadata": meta,
+            "consignee_code": str(consignee_code_val) if consignee_code_val is not None else None,
+        }
+
+    logger.info("Building docs_df records from clean_df...")
+    docs_records = clean_df.apply(row_to_doc, axis=1).tolist()
+    docs_df = pd.DataFrame(docs_records)
+
+    logger.info(f"docs_df constructed. Shape: {docs_df.shape}")
+    display(docs_df.head(5))
+
+    logger.info("Rebuild combined_content + docs_df cell completed successfully.")
+
+except Exception as e:
+    logger.error(f"Rebuild combined_content / build docs_df failed: {e}", exc_info=True)
+    raise
+
+
+# In[36]:
+
+
+# for col in clean_df.columns:
+#     print(col)
+
+
+# In[30]:
+
+
+# CELL — Build JSONL files per source_group into ./upload_jsonl
+
+try:
+    logger.info("Starting CELL: build JSONL files per source_group")
+
+    import pandas as pd
+    from pathlib import Path
+
+    if "clean_df" not in globals():
+        raise NameError(
+            "clean_df not found. Run all transformations (status/delays/summaries/"
+            "combined_content/source_group) before this cell."
+        )
+
+    # Ensure required columns exist
+    required_cols = [
+        "carr_eqp_uid",
+        "combined_content",
+        "consignee_codes",
+        "source_group",
+    ]
+    missing = [c for c in required_cols if c not in clean_df.columns]
+    if missing:
+        raise KeyError(f"Missing required columns in clean_df for JSONL build: {missing}")
+
+    # Output directory
+    out_dir = Path.cwd() / "upload_jsonl"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory for JSONL files: {out_dir}")
+
+    def row_to_doc(row: pd.Series) -> dict:
+        """
+        Map one clean_df row to JSONL document:
+
+        {
+          "document_id": <carr_eqp_uid>,
+          "content": <combined_content>,
+          "metadata": { ... all other fields except combined_text variants & carr_eqp_uid ... },
+          "consignee_code": <consignee_codes>   # RLS key
+        }
+        """
+        doc_id = row.get("carr_eqp_uid")
+        if pd.isna(doc_id) or doc_id is None:
+            raise ValueError("Null carr_eqp_uid encountered; cannot build document_id.")
+
+        content = row.get("combined_content")
+        if content is None or (isinstance(content, float) and pd.isna(content)):
+            content = ""
+
+        # Copy full row as metadata
+        meta = row.to_dict()
+
+        # Remove fields that must NOT be duplicated inside metadata
+        for k in ["carr_eqp_uid", "combined_content", "combined_text", "ultimate_combined_text"]:
+            meta.pop(k, None)
+
+        consignee_code_val = row.get("consignee_codes")
+
+        return {
+            "document_id": str(doc_id),
+            "content": content,
+            "metadata": meta,
+            "consignee_code": str(consignee_code_val) if consignee_code_val is not None else None,
+        }
+
+    # Build docs_df (for inspection/debug) and attach a helper group column
+    records = []
+    for _, row in clean_df.iterrows():
+        doc = row_to_doc(row)
+        doc["__source_group"] = row.get("source_group", "shipment_unknown")
+        records.append(doc)
+
+    docs_df = pd.DataFrame(records)
+
+    logger.info(f"docs_df created for JSONL export: shape={docs_df.shape}")
+    logger.info("Source group counts: " + str(docs_df["__source_group"].value_counts().to_dict()))
+
+    # Write one JSONL file per source group
+    for group, grp_df in docs_df.groupby("__source_group", dropna=False):
+        group_name = str(group).strip() if group is not None else "shipment_unknown"
+        if not group_name:
+            group_name = "shipment_unknown"
+
+        # Ensure it starts with 'shipment_'
+        if not group_name.startswith("shipment_"):
+            group_name = f"shipment_{group_name}"
+
+        file_path = out_dir / f"{group_name}.jsonl"
+
+        # Drop helper column before persisting
+        payload_df = grp_df.drop(columns=["__source_group"])
+
+        logger.info(f"Writing {len(payload_df)} docs to {file_path}")
+        payload_df.to_json(
+            file_path,
+            orient="records",
+            lines=True,
+            force_ascii=False,
+        )
+
+    logger.info("All JSONL files written successfully under upload_jsonl/")
+
+except Exception as e:
+    logger.error(f"JSONL per-group export failed: {e}", exc_info=True)
+    raise
+
+
+# In[31]:
+
+
+# CELL — Upload all JSONL files from ./upload_jsonl to Azure Blob (upload container)
+
+try:
+    logger.info("Starting CELL: upload JSONL files from 'upload_jsonl' to Azure Blob")
+
+    import os
+    from pathlib import Path
+    from typing import Iterable
+    from azure.storage.blob import BlobServiceClient
+    from azure.core.exceptions import ResourceNotFoundError, ClientAuthenticationError, HttpResponseError
+
+    # --- 1) Read required env vars ---
+    conn_str = AZURE_STORAGE_CONN_STR
+    upload_container = AZURE_STORAGE_CONTAINER_UPLD
+
+    if not conn_str:
+        raise EnvironmentError("AZURE_STORAGE_CONN_STR is not set.")
+    if not upload_container:
+        raise EnvironmentError("AZURE_STORAGE_CONTAINER_UPLD is not set.")
+
+    logger.info(f"Using container for JSONL upload: {upload_container}")
+
+    # --- 2) Locate local JSONL files ---
+    upload_dir = Path.cwd() / "upload_jsonl"
+    if not upload_dir.exists():
+        raise FileNotFoundError(f"Local folder not found: {upload_dir}")
+
+    jsonl_files = sorted(upload_dir.glob("*.jsonl"))
+    if not jsonl_files:
+        raise FileNotFoundError(f"No .jsonl files found in {upload_dir}")
+
+    logger.info(f"Found {len(jsonl_files)} JSONL files for upload.")
+    logger.info("Sample files: " + ", ".join([f.name for f in jsonl_files[:5]]))
+
+    # --- 3) Init blob client / container ---
+    bsc = BlobServiceClient.from_connection_string(conn_str)
+    container_client = bsc.get_container_client(upload_container)
+
+    if not container_client.exists():
+        raise ResourceNotFoundError(
+            f"Target container '{upload_container}' does not exist. "
+            "Create it in Azure Storage or update AZURE_STORAGE_CONTAINER_UPLD."
+        )
+
+    # --- 4) Upload helper ---
+    def upload_jsonl_files(files: Iterable[Path]) -> None:
+        """
+        Upload all given JSONL files into the upload container.
+        Blob name = filename (e.g. 'shipment_mar25.jsonl').
+        Overwrites if blob already exists.
+        """
+        for path in files:
+            blob_name = path.name  # you can add a prefix like 'jsonl/' if you want later
+            try:
+                logger.info(f"Uploading {path} → blob '{blob_name}' in container '{upload_container}'")
+                with open(path, "rb") as f:
+                    container_client.upload_blob(
+                        name=blob_name,
+                        data=f,
+                        overwrite=True,
+                    )
+                logger.info(f"Uploaded: {blob_name}")
+            except ClientAuthenticationError as e:
+                logger.error(f"Authentication failed while uploading {blob_name}: {e}")
+                raise
+            except HttpResponseError as e:
+                logger.error(f"Server error while uploading {blob_name}: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error while uploading {blob_name}: {e}")
+                raise
+
+    # --- 5) Execute upload ---
+    upload_jsonl_files(jsonl_files)
+
+    logger.info("All JSONL files uploaded successfully to Azure Blob upload container.")
+
+except Exception as e:
+    logger.error(f"JSONL upload cell failed: {e}", exc_info=True)
+    raise
+
+
+# In[32]:
+
+
+flname = r"upload_jsonl/shipment_dec25.jsonl"
+read_df = pd.read_json(flname, lines=True)
+
+# read_df.sample(10)
+
+
+# In[33]:
+
+
+# Iterates through the sample and prints each 'content' string directly
+for text in read_df.sample(10)['content']:
+    print(text)
+    print("-" * 30)
+
+
+# In[34]:
+
+
+end_time = time.perf_counter()
+
+elapsed_time_secs = end_time - start_time
+msg = f"Execution took: {timedelta(seconds=round(elapsed_time_secs))} (Wall clock time)"
+
+print(msg)
+
+
+# In[ ]:
+
+
+
+

@@ -1,0 +1,9 @@
+.env
+logs/
+downloads/
+output_jsonl/
+.ipynb_checkpoints/
+shipment_dec25.jsonl
+shipments_dec25.jsonl
+docs/walkthrough.md
+ - Copy.env
