@@ -1,30 +1,40 @@
-
-import os
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
-from datetime import datetime
+
 import pandas as pd
+from azure.core.exceptions import (ClientAuthenticationError,
+                                   HttpResponseError, ResourceNotFoundError)
 from azure.storage.blob import BlobServiceClient
-from azure.core.exceptions import ResourceNotFoundError, ClientAuthenticationError, HttpResponseError
 
 logger = logging.getLogger("shipment_ingestion")
 
+
 class DataIngestor:
-    def __init__(self, conn_str: str, container_name: str, download_dir: str = "downloads"):
+    def __init__(
+        self, conn_str: str, container_name: str, download_dir: str = "downloads"
+    ):
         self.conn_str = conn_str
         self.container_name = container_name
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        
+
         try:
-            self.blob_service_client = BlobServiceClient.from_connection_string(self.conn_str)
-            self.container_client = self.blob_service_client.get_container_client(self.container_name)
+            self.blob_service_client = BlobServiceClient.from_connection_string(
+                self.conn_str
+            )
+            self.container_client = self.blob_service_client.get_container_client(
+                self.container_name
+            )
         except Exception as e:
             logger.error("Failed to initialize Blob Service Client.", exc_info=True)
             raise
 
-    def find_latest_csv_blob(self, prefix: Optional[str] = None) -> Tuple[str, datetime]:
+    def find_latest_csv_blob(
+        self, prefix: Optional[str] = None
+    ) -> Tuple[str, datetime]:
         """
         Find latest CSV in container by last_modified.
         """
@@ -41,10 +51,12 @@ class DataIngestor:
                 if latest_lm is None or lm > latest_lm:
                     latest_name = name
                     latest_lm = lm
-            
+
             if not latest_name:
-                raise FileNotFoundError(f"No .csv blobs found in container '{self.container_name}'")
-                
+                raise FileNotFoundError(
+                    f"No .csv blobs found in container '{self.container_name}'"
+                )
+
             logger.info(f"Found latest CSV: {latest_name} (Last Modified: {latest_lm})")
             return latest_name, latest_lm
 
@@ -76,17 +88,33 @@ class DataIngestor:
         logger.info(f"Reading CSV file: {csv_path}")
         try:
             # dtype=str is crucial to prevent leading zero loss in IDs
-            df = pd.read_csv(csv_path, dtype=str, keep_default_na=False, low_memory=False, encoding="utf-8-sig")
+            df = pd.read_csv(
+                csv_path,
+                dtype=str,
+                keep_default_na=False,
+                low_memory=False,
+                encoding="utf-8-sig",
+            )
             logger.info(f"CSV loaded. Shape: {df.shape}")
             return df
         except UnicodeDecodeError:
-            logger.warning("UTF-8 strict decoding failed. Retrying with 'iso-8859-1'...")
+            logger.warning(
+                "UTF-8 strict decoding failed. Retrying with 'iso-8859-1'..."
+            )
             try:
-                df = pd.read_csv(csv_path, dtype=str, keep_default_na=False, low_memory=False, encoding="iso-8859-1")
+                df = pd.read_csv(
+                    csv_path,
+                    dtype=str,
+                    keep_default_na=False,
+                    low_memory=False,
+                    encoding="iso-8859-1",
+                )
                 logger.info(f"CSV loaded with fallback encoding. Shape: {df.shape}")
                 return df
             except Exception as e:
-                logger.error("Failed to read CSV with fallback encoding.", exc_info=True)
+                logger.error(
+                    "Failed to read CSV with fallback encoding.", exc_info=True
+                )
                 raise
         except Exception as e:
             logger.error(f"Failed to read CSV file: {csv_path}", exc_info=True)

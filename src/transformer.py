@@ -18,15 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .config import (
-    COLUMN_MAPPING,            # raw header -> canonical name
-    DATE_COLUMNS,              # list of canonical *_date columns
-    MULTI_VALUED_DATE_COLS,    # date columns that can contain multiple dates in a cell
-    BOOLEAN_COLUMNS,           # columns to coerce to booleans
-    ID_COLUMNS,                # columns that must be string IDs
-    DROP_COLUMNS_AFTER_LOAD,   # columns safe to drop after enrichment
-    MULTI_VALUED_ID_COLS,      # ID columns that can have multiple values in a cell
-)
+from .config import BOOLEAN_COLUMNS  # columns to coerce to booleans
+from .config import COLUMN_MAPPING  # raw header -> canonical name
+from .config import DATE_COLUMNS  # list of canonical *_date columns
+from .config import \
+    DROP_COLUMNS_AFTER_LOAD  # columns safe to drop after enrichment
+from .config import ID_COLUMNS  # columns that must be string IDs
+from .config import (  # date columns that can contain multiple dates in a cell; ID columns that can have multiple values in a cell
+    MULTI_VALUED_DATE_COLS, MULTI_VALUED_ID_COLS)
 
 logger = logging.getLogger("shipment_ingestion")
 
@@ -68,7 +67,9 @@ class DataTransformer:
         self.logger.info("Columns renamed to canonical schema. Shape=%s", df.shape)
 
         df = self._basic_clean(df)
-        self.logger.info("Basic cleaning done (strings, booleans, IDs, dates). Shape=%s", df.shape)
+        self.logger.info(
+            "Basic cleaning done (strings, booleans, IDs, dates). Shape=%s", df.shape
+        )
 
         df = self._derive_consignee_fields(df)
         self.logger.info("Consignee name/code derived. Shape=%s", df.shape)
@@ -98,16 +99,26 @@ class DataTransformer:
         self.logger.info("Port route summary derived. Shape=%s", df.shape)
 
         df = self.add_partition_tags(df)
-        self.logger.info("Partition tags (source_group / source_month_tag) derived. Shape=%s", df.shape)
+        self.logger.info(
+            "Partition tags (source_group / source_month_tag) derived. Shape=%s",
+            df.shape,
+        )
 
         df = self.generate_search_content(df)
         self.logger.info("combined_content generated. Final shape=%s", df.shape)
 
         if DROP_COLUMNS_AFTER_LOAD:
             before = df.shape[1]
-            df = df.drop(columns=[c for c in DROP_COLUMNS_AFTER_LOAD if c in df.columns], errors="ignore")
+            df = df.drop(
+                columns=[c for c in DROP_COLUMNS_AFTER_LOAD if c in df.columns],
+                errors="ignore",
+            )
             after = df.shape[1]
-            self.logger.info("Dropped %d technical columns (DROP_COLUMNS_AFTER_LOAD). Final cols=%d", before - after, after)
+            self.logger.info(
+                "Dropped %d technical columns (DROP_COLUMNS_AFTER_LOAD). Final cols=%d",
+                before - after,
+                after,
+            )
 
         self.logger.info("Transformation pipeline completed successfully.")
         return df
@@ -159,7 +170,9 @@ class DataTransformer:
                 mismatches.append((i, act, exp))
 
         if mismatches:
-            self.logger.error("HEADER VALIDATION FAILED: %d mismatch(es) found.", len(mismatches))
+            self.logger.error(
+                "HEADER VALIDATION FAILED: %d mismatch(es) found.", len(mismatches)
+            )
             self.logger.error("First 20 mismatches (index | actual -> expected):")
             for i, act, exp in mismatches[:20]:
                 self.logger.error("  [%d] '%s'  ->  '%s'", i, act, exp)
@@ -168,10 +181,14 @@ class DataTransformer:
             end = min(len(actual), first_idx + 4)
             self.logger.error("Context around first mismatch:")
             for i in range(start, end):
-                self.logger.error("  [%d] actual='%s' | expected='%s'", i, actual[i], expected[i])
+                self.logger.error(
+                    "  [%d] actual='%s' | expected='%s'", i, actual[i], expected[i]
+                )
             raise ValueError("HEADER VALIDATION FAILED: name/position mismatch.")
 
-        self.logger.info("Header validation PASSED: all names and positions align with schema.")
+        self.logger.info(
+            "Header validation PASSED: all names and positions align with schema."
+        )
         return out
 
     def _rename_to_canonical(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -211,8 +228,14 @@ class DataTransformer:
     def _coerce_booleans(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         out = df.copy()
         mapping: Dict[str, Optional[bool]] = {
-            "Y": True, "YES": True, "TRUE": True, "1": True,
-            "N": False, "NO": False, "FALSE": False, "0": False,
+            "Y": True,
+            "YES": True,
+            "TRUE": True,
+            "1": True,
+            "N": False,
+            "NO": False,
+            "FALSE": False,
+            "0": False,
         }
         for c in cols:
             if c not in out.columns:
@@ -222,7 +245,9 @@ class DataTransformer:
         return out
 
     @staticmethod
-    def _parse_dates(df: pd.DataFrame, date_cols: List[str], multi_date_cols: List[str]) -> pd.DataFrame:
+    def _parse_dates(
+        df: pd.DataFrame, date_cols: List[str], multi_date_cols: List[str]
+    ) -> pd.DataFrame:
         out = df.copy()
 
         def _parse_single_date(val: Any) -> Optional[pd.Timestamp]:
@@ -248,7 +273,9 @@ class DataTransformer:
                 pass
 
             if isinstance(val, (list, tuple)):
-                parsed = [d for d in (_parse_single_date(v) for v in val) if d is not None]
+                parsed = [
+                    d for d in (_parse_single_date(v) for v in val) if d is not None
+                ]
                 return parsed or None
 
             text = str(val).strip()
@@ -256,7 +283,9 @@ class DataTransformer:
                 return None
 
             parts = [p.strip() for p in text.split(",") if p.strip()]
-            parsed = [d for d in (_parse_single_date(p) for p in parts) if d is not None]
+            parsed = [
+                d for d in (_parse_single_date(p) for p in parts) if d is not None
+            ]
             return parsed or None
 
         for c in date_cols:
@@ -363,23 +392,33 @@ class DataTransformer:
     def _derive_consignee_fields(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
         source_col = None
-        for candidate in ["consignee_raw", "consignee_codes", "Consignee Code (Multiple)"]:
+        for candidate in [
+            "consignee_raw",
+            "consignee_codes",
+            "Consignee Code (Multiple)",
+        ]:
             if candidate in out.columns:
                 source_col = candidate
                 break
 
         if not source_col:
-            self.logger.warning("No consignee_raw / consignee_codes column found; skipping consignee derivation.")
+            self.logger.warning(
+                "No consignee_raw / consignee_codes column found; skipping consignee derivation."
+            )
             return out
 
-        self.logger.info("Deriving consignee_name / consignee_codes from '%s'.", source_col)
+        self.logger.info(
+            "Deriving consignee_name / consignee_codes from '%s'.", source_col
+        )
 
         out["consignee_name"] = out[source_col].apply(self._extract_consignee_name)
         out["consignee_codes"] = out[source_col].apply(self._extract_consignee_code)
 
         # If your downstream expects list for RLS (recommended), convert to list[str]
         # Keep it minimal: single code -> [code], none -> []
-        out["consignee_codes"] = out["consignee_codes"].apply(lambda x: [x] if isinstance(x, str) and x else [])
+        out["consignee_codes"] = out["consignee_codes"].apply(
+            lambda x: [x] if isinstance(x, str) and x else []
+        )
 
         return out
 
@@ -424,18 +463,18 @@ class DataTransformer:
 
         if optimal is None:
             if isinstance(eta, pd.Timestamp):
-                delay_days = float((today - eta).days)
+                delay_days = int((today - eta).days)
                 if eta > today:
-                    delay_days = 0.0
+                    delay_days = 0
                     label = "on_time"
                 else:
                     delay_days = max(0, delay_days)
                     label = "delay" if delay_days > 0 else "on_time"
             else:
-                delay_days = 0.0
+                delay_days = 0
                 label = "on_time"
         else:
-            delay_days = float((optimal - eta).days)
+            delay_days = int((optimal - eta).days)
             if delay_days > 0:
                 label = "delay"
             elif delay_days < 0:
@@ -449,8 +488,12 @@ class DataTransformer:
         today = pd.Timestamp("today").normalize()
 
         optimal = DataTransformer._to_date_or_none(row.get("optimal_eta_fd_date"))
-        delivery = DataTransformer._to_date_or_none(row.get("delivery_to_consignee_date"))
-        empty_ret = DataTransformer._to_date_or_none(row.get("empty_container_return_date"))
+        delivery = DataTransformer._to_date_or_none(
+            row.get("delivery_to_consignee_date")
+        )
+        empty_ret = DataTransformer._to_date_or_none(
+            row.get("empty_container_return_date")
+        )
 
         if isinstance(delivery, pd.Timestamp):
             actual = delivery
@@ -463,9 +506,9 @@ class DataTransformer:
             has_real_actual = False
 
         if isinstance(optimal, pd.Timestamp):
-            delay_days = float((actual - optimal).days)
+            delay_days = int((actual - optimal).days)
         else:
-            delay_days = 0.0
+            delay_days = 0
 
         if has_real_actual:
             if delay_days > 0:
@@ -477,13 +520,13 @@ class DataTransformer:
         else:
             if isinstance(optimal, pd.Timestamp):
                 if optimal > today:
-                    delay_days = 0.0
+                    delay_days = 0
                     label = "on_time"
                 else:
                     delay_days = max(0, delay_days)
                     label = "delay" if delay_days > 0 else "on_time"
             else:
-                delay_days = 0.0
+                delay_days = 0
                 label = "on_time"
         return label, delay_days
 
@@ -504,18 +547,28 @@ class DataTransformer:
     def _derive_shipment_status_row(row: pd.Series) -> str:
         today = pd.Timestamp("today").normalize()
 
-        empty_ret = DataTransformer._to_date_or_none(row.get("empty_container_return_date"))
-        delivery = DataTransformer._to_date_or_none(row.get("delivery_to_consignee_date"))
-        last_cy_arr = DataTransformer._to_date_or_none(row.get("equipment_arrived_at_last_cy_date"))
-        last_cy_out = DataTransformer._to_date_or_none(row.get("out_gate_at_last_cy_date"))
-        optimal_ata_dp = DataTransformer._to_date_or_none(row.get("optimal_ata_dp_date"))
+        empty_ret = DataTransformer._to_date_or_none(
+            row.get("empty_container_return_date")
+        )
+        delivery = DataTransformer._to_date_or_none(
+            row.get("delivery_to_consignee_date")
+        )
+        last_cy_arr = DataTransformer._to_date_or_none(
+            row.get("equipment_arrived_at_last_cy_date")
+        )
+        last_cy_out = DataTransformer._to_date_or_none(
+            row.get("out_gate_at_last_cy_date")
+        )
+        optimal_ata_dp = DataTransformer._to_date_or_none(
+            row.get("optimal_ata_dp_date")
+        )
         atd_flp = DataTransformer._to_date_or_none(row.get("atd_flp_date"))
         ata_flp = DataTransformer._to_date_or_none(row.get("ata_flp_date"))
         atd_lp = DataTransformer._to_date_or_none(row.get("atd_lp_date"))
         etd_lp = DataTransformer._to_date_or_none(row.get("etd_lp_date"))
 
         if isinstance(empty_ret, pd.Timestamp):
-            return "EMPTY_RETURNED"
+            return "EMPTY_CONTAINER_RETURNED"
         if isinstance(delivery, pd.Timestamp):
             return "DELIVERED"
 
@@ -528,7 +581,9 @@ class DataTransformer:
             return "AT_DP"
 
         # Ocean transit if departed TS (or load->ocean) but not yet at DP
-        if isinstance(atd_flp, pd.Timestamp) and (not isinstance(optimal_ata_dp, pd.Timestamp) or optimal_ata_dp > today):
+        if isinstance(atd_flp, pd.Timestamp) and (
+            not isinstance(optimal_ata_dp, pd.Timestamp) or optimal_ata_dp > today
+        ):
             return "IN_OCEAN_TRANSIT"
 
         # At TS if arrived TS but not departed TS
@@ -536,7 +591,11 @@ class DataTransformer:
             return "AT_TS"
 
         # At origin if not left origin and ETD is today/future
-        if not isinstance(atd_lp, pd.Timestamp) and isinstance(etd_lp, pd.Timestamp) and etd_lp >= today:
+        if (
+            not isinstance(atd_lp, pd.Timestamp)
+            and isinstance(etd_lp, pd.Timestamp)
+            and etd_lp >= today
+        ):
             return "AT_ORIGIN"
 
         return "UNKNOWN"
@@ -574,48 +633,70 @@ class DataTransformer:
             atd_flp = self._to_date_or_none(row.get("atd_flp_date"))
             optimal_ata_dp = self._to_date_or_none(row.get("optimal_ata_dp_date"))
             out_gate_from_dp = self._to_date_or_none(row.get("out_gate_from_dp_date"))
-            equip_arr_last_cy = self._to_date_or_none(row.get("equipment_arrived_at_last_cy_date"))
+            equip_arr_last_cy = self._to_date_or_none(
+                row.get("equipment_arrived_at_last_cy_date")
+            )
             delivery = self._to_date_or_none(row.get("delivery_to_consignee_date"))
             empty_ret = self._to_date_or_none(row.get("empty_container_return_date"))
 
             # Leg 1
             leg1_desc = f"{por or 'POR'} → {lp or 'LOAD'}"
             dates1 = []
-            if etd_lp: dates1.append(f"ETD {self._fmt_date_val(etd_lp)}")
-            if atd_lp: dates1.append(f"ATD {self._fmt_date_val(atd_lp)}")
+            if etd_lp:
+                dates1.append(f"ETD {self._fmt_date_val(etd_lp)}")
+            if atd_lp:
+                dates1.append(f"ATD {self._fmt_date_val(atd_lp)}")
             if dates1:
-                parts.append(f"Leg 1 (POR → Load Port): {leg1_desc} | " + ", ".join(dates1))
+                parts.append(
+                    f"Leg 1 (POR → Load Port): {leg1_desc} | " + ", ".join(dates1)
+                )
 
             # Leg 2: Load->TS
             if flp and flp != lp:
                 leg2_desc = f"{lp or 'LOAD'} → {flp}"
                 dates2 = []
-                if ata_flp: dates2.append(f"ATA {self._fmt_date_val(ata_flp)}")
-                if atd_flp: dates2.append(f"ATD {self._fmt_date_val(atd_flp)}")
+                if ata_flp:
+                    dates2.append(f"ATA {self._fmt_date_val(ata_flp)}")
+                if atd_flp:
+                    dates2.append(f"ATD {self._fmt_date_val(atd_flp)}")
                 if dates2:
-                    parts.append(f"Leg 2 (Load → TS): {leg2_desc} | " + ", ".join(dates2))
+                    parts.append(
+                        f"Leg 2 (Load → TS): {leg2_desc} | " + ", ".join(dates2)
+                    )
 
             # Leg 3: Ocean to DP
             leg3_desc = f"{flp or lp or 'LOAD'} → {dp or 'DP'}"
             if optimal_ata_dp:
-                parts.append(f"Leg 3 (Ocean to DP): {leg3_desc} | ATA_DP {self._fmt_date_val(optimal_ata_dp)}")
+                parts.append(
+                    f"Leg 3 (Ocean to DP): {leg3_desc} | ATA_DP {self._fmt_date_val(optimal_ata_dp)}"
+                )
 
             # Leg 4: DP -> Last CY
             if last_cy:
                 leg4_desc = f"{dp or 'DP'} → {last_cy}"
                 dates4 = []
-                if out_gate_from_dp: dates4.append(f"OUT_GATE_DP {self._fmt_date_val(out_gate_from_dp)}")
-                if equip_arr_last_cy: dates4.append(f"ARR_LAST_CY {self._fmt_date_val(equip_arr_last_cy)}")
+                if out_gate_from_dp:
+                    dates4.append(f"OUT_GATE_DP {self._fmt_date_val(out_gate_from_dp)}")
+                if equip_arr_last_cy:
+                    dates4.append(
+                        f"ARR_LAST_CY {self._fmt_date_val(equip_arr_last_cy)}"
+                    )
                 if dates4:
-                    parts.append(f"Leg 4 (DP → Last CY): {leg4_desc} | " + ", ".join(dates4))
+                    parts.append(
+                        f"Leg 4 (DP → Last CY): {leg4_desc} | " + ", ".join(dates4)
+                    )
 
             # Leg 5
             leg5_desc = f"{last_cy or dp or 'DP'} → {final_dest or 'FINAL'}"
             dates5 = []
-            if delivery: dates5.append(f"DELIVERY {self._fmt_date_val(delivery)}")
-            if empty_ret: dates5.append(f"EMPTY_RET {self._fmt_date_val(empty_ret)}")
+            if delivery:
+                dates5.append(f"DELIVERY {self._fmt_date_val(delivery)}")
+            if empty_ret:
+                dates5.append(f"EMPTY_RET {self._fmt_date_val(empty_ret)}")
             if dates5:
-                parts.append(f"Leg 5 (Last CY → Final): {leg5_desc} | " + ", ".join(dates5))
+                parts.append(
+                    f"Leg 5 (Last CY → Final): {leg5_desc} | " + ", ".join(dates5)
+                )
 
             return " || ".join([p for p in parts if p]) if parts else ""
 
@@ -636,25 +717,44 @@ class DataTransformer:
         dp_days = DataTransformer._first_scalar(row.get("dp_delayed_dur"))
         fd_days = DataTransformer._first_scalar(row.get("fd_delayed_dur"))
 
-        last_cy_lcn = DataTransformer._safe_text(row.get("equipment_arrived_at_last_cy_lcn"))
+        last_cy_lcn = DataTransformer._safe_text(
+            row.get("equipment_arrived_at_last_cy_lcn")
+        )
         final_dest = DataTransformer._safe_text(row.get("final_destination"))
 
         if dp_label == "delay" and isinstance(dp_days, (float, int)) and dp_days > 0:
-            reasons.append(f"Ocean / discharge-port leg is delayed versus ETA at DP by ~{int(dp_days)} day(s).")
+            reasons.append(
+                f"Ocean / discharge-port leg is delayed versus ETA at DP by ~{int(dp_days)} day(s)."
+            )
 
         if fd_label == "delay" and isinstance(fd_days, (float, int)) and fd_days > 0:
-            reasons.append(f"Final delivery leg is delayed versus ETA at final destination by ~{int(fd_days)} day(s).")
+            reasons.append(
+                f"Final delivery leg is delayed versus ETA at final destination by ~{int(fd_days)} day(s)."
+            )
 
-        if fd_label == "delay" and last_cy_lcn and final_dest and last_cy_lcn != final_dest:
-            reasons.append(f"Last-mile from last CY {last_cy_lcn} to final destination {final_dest} appears delayed.")
+        if (
+            fd_label == "delay"
+            and last_cy_lcn
+            and final_dest
+            and last_cy_lcn != final_dest
+        ):
+            reasons.append(
+                f"Last-mile from last CY {last_cy_lcn} to final destination {final_dest} appears delayed."
+            )
 
-        delivery = DataTransformer._to_date_or_none(row.get("delivery_to_consignee_date"))
-        empty_ret = DataTransformer._to_date_or_none(row.get("empty_container_return_date"))
+        delivery = DataTransformer._to_date_or_none(
+            row.get("delivery_to_consignee_date")
+        )
+        empty_ret = DataTransformer._to_date_or_none(
+            row.get("empty_container_return_date")
+        )
         if delivery is None and isinstance(empty_ret, pd.Timestamp):
             gap_flag = "missing_delivery_event_with_empty_return"
 
         if not reasons:
-            reasons.append("Shipment is on time against configured DP / final destination ETAs.")
+            reasons.append(
+                "Shipment is on time against configured DP / final destination ETAs."
+            )
 
         return "; ".join(reasons), gap_flag
 
@@ -672,7 +772,12 @@ class DataTransformer:
     def _derive_milestones_row(row: pd.Series) -> str:
         today = pd.Timestamp("today").normalize().date()
 
-        status = DataTransformer._safe_text(row.get("shipment_status"), default="UNKNOWN").upper()
+        status = DataTransformer._safe_text(
+            row.get("shipment_status"), default="UNKNOWN"
+        ).upper()
+        display_status = status
+        if status in {"EMPTY_RETURNED", "EMPTY_CONTAINER_RETURNED"}:
+            display_status = "EMPTY CONTAINER RETURNED"
 
         # Locations
         por = DataTransformer._safe_text(row.get("place_of_receipt")) or "POR"
@@ -686,13 +791,26 @@ class DataTransformer:
             or DataTransformer._safe_text(row.get("last_cy_location"))
             or "Last CY"
         )
-        cy_out_lcn = DataTransformer._safe_text(row.get("out_gate_at_last_cy_lcn")) or last_cy_lcn
+        cy_out_lcn = (
+            DataTransformer._safe_text(row.get("out_gate_at_last_cy_lcn"))
+            or last_cy_lcn
+        )
 
         pod = DataTransformer._safe_text(row.get("place_of_delivery"))
-        final_dest = DataTransformer._safe_text(row.get("final_destination")) or pod or "Final Destination"
+        final_dest = (
+            DataTransformer._safe_text(row.get("final_destination"))
+            or pod
+            or "Final Destination"
+        )
 
-        delivery_lcn = DataTransformer._safe_text(row.get("delivery_to_consignee_lcn")) or final_dest
-        empty_rt_lcn = DataTransformer._safe_text(row.get("empty_container_return_lcn")) or delivery_lcn
+        delivery_lcn = (
+            DataTransformer._safe_text(row.get("delivery_to_consignee_lcn"))
+            or final_dest
+        )
+        empty_rt_lcn = (
+            DataTransformer._safe_text(row.get("empty_container_return_lcn"))
+            or delivery_lcn
+        )
 
         # Dates (as date objects)
         def d(v: Any) -> Optional[pd.Timestamp]:
@@ -721,18 +839,28 @@ class DataTransformer:
         rail_dep_dt = d(row.get("rail_departure_dp_date"))
         rail_dep_lc = DataTransformer._safe_text(row.get("rail_departure_dp_lcn"))
         rail_arr_dt = d(row.get("rail_arrival_destination_date"))
-        rail_arr_lc = DataTransformer._safe_text(row.get("rail_arrival_destination_lcn"))
+        rail_arr_lc = DataTransformer._safe_text(
+            row.get("rail_arrival_destination_lcn")
+        )
 
-        delayed_dp = DataTransformer._safe_text(row.get("delayed_dp"), default="unknown").lower()
+        delayed_dp = DataTransformer._safe_text(
+            row.get("delayed_dp"), default="unknown"
+        ).lower()
         dp_dur = DataTransformer._first_scalar(row.get("dp_delayed_dur"))
         dp_days = None
-        if isinstance(dp_dur, (int, float)) and not (isinstance(dp_dur, float) and np.isnan(dp_dur)):
+        if isinstance(dp_dur, (int, float)) and not (
+            isinstance(dp_dur, float) and np.isnan(dp_dur)
+        ):
             dp_days = int(dp_dur)
 
-        delayed_fd = DataTransformer._safe_text(row.get("delayed_fd"), default="unknown").lower()
+        delayed_fd = DataTransformer._safe_text(
+            row.get("delayed_fd"), default="unknown"
+        ).lower()
         fd_dur = DataTransformer._first_scalar(row.get("fd_delayed_dur"))
         fd_days = None
-        if isinstance(fd_dur, (int, float)) and not (isinstance(fd_dur, float) and np.isnan(fd_dur)):
+        if isinstance(fd_dur, (int, float)) and not (
+            isinstance(fd_dur, float) and np.isnan(fd_dur)
+        ):
             fd_days = int(fd_dur)
 
         leg_msgs: List[str] = []
@@ -751,7 +879,9 @@ class DataTransformer:
         else:
             leg1_state = "UNKNOWN"
             leg1_desc = "no ETD/ATD recorded for origin leg."
-        leg_msgs.append(f"Leg 1 (POR → Load Port) [{leg1_state}]: {por} → {lp}; {leg1_desc}")
+        leg_msgs.append(
+            f"Leg 1 (POR → Load Port) [{leg1_state}]: {por} → {lp}; {leg1_desc}"
+        )
 
         # Leg 2
         if ts:
@@ -767,10 +897,16 @@ class DataTransformer:
                 leg2_desc = f"arrived TS {ts} on {ata_flp.date().isoformat()}; TS departure not recorded."
             else:
                 leg2_state = "PLANNED"
-                leg2_desc = f"TS at {ts} configured, but no arrival/departure recorded yet."
-            leg_msgs.append(f"Leg 2 (Load Port → TS) [{leg2_state}]: {lp} → {ts}; {leg2_desc}")
+                leg2_desc = (
+                    f"TS at {ts} configured, but no arrival/departure recorded yet."
+                )
+            leg_msgs.append(
+                f"Leg 2 (Load Port → TS) [{leg2_state}]: {lp} → {ts}; {leg2_desc}"
+            )
         else:
-            leg_msgs.append(f"Leg 2 (Load Port → TS) [NOT_APPLICABLE]: no transshipment; direct ocean leg from {lp} to {dp}.")
+            leg_msgs.append(
+                f"Leg 2 (Load Port → TS) [NOT_APPLICABLE]: no transshipment; direct ocean leg from {lp} to {dp}."
+            )
 
         # Leg 3
         dp_arrived = ata_dp is not None and ata_dp.date() <= today
@@ -796,21 +932,33 @@ class DataTransformer:
             else:
                 leg3_state = "UNKNOWN"
                 leg3_desc = "no ETA/ATA DP recorded."
-        leg_msgs.append(f"Leg 3 (TS/Load → DP) [{leg3_state}]: {(ts or lp)} → {dp}; {leg3_desc}")
+        leg_msgs.append(
+            f"Leg 3 (TS/Load → DP) [{leg3_state}]: {(ts or lp)} → {dp}; {leg3_desc}"
+        )
 
         # Leg 4 (DP -> CY, include rail)
         rail_bits: List[str] = []
         if rail_load_dt is not None or rail_load_lc:
-            rail_bits.append(f"rail load {rail_load_lc or dp_out_lcn} on {rail_load_dt.date().isoformat() if rail_load_dt else 'date not recorded'}")
+            rail_bits.append(
+                f"rail load {rail_load_lc or dp_out_lcn} on {rail_load_dt.date().isoformat() if rail_load_dt else 'date not recorded'}"
+            )
         if rail_dep_dt is not None or rail_dep_lc:
-            rail_bits.append(f"rail depart {rail_dep_lc or dp_out_lcn} on {rail_dep_dt.date().isoformat() if rail_dep_dt else 'date not recorded'}")
+            rail_bits.append(
+                f"rail depart {rail_dep_lc or dp_out_lcn} on {rail_dep_dt.date().isoformat() if rail_dep_dt else 'date not recorded'}"
+            )
         if rail_arr_dt is not None or rail_arr_lc:
-            rail_bits.append(f"rail arrive {rail_arr_lc or last_cy_lcn} on {rail_arr_dt.date().isoformat() if rail_arr_dt else 'date not recorded'}")
+            rail_bits.append(
+                f"rail arrive {rail_arr_lc or last_cy_lcn} on {rail_arr_dt.date().isoformat() if rail_arr_dt else 'date not recorded'}"
+            )
 
         if equip_arr_cy is not None or rail_arr_dt is not None:
             leg4_state = "COMPLETED"
             arr_dt = equip_arr_cy or rail_arr_dt
-            arr_lc = last_cy_lcn if equip_arr_cy is not None else (rail_arr_lc or last_cy_lcn)
+            arr_lc = (
+                last_cy_lcn
+                if equip_arr_cy is not None
+                else (rail_arr_lc or last_cy_lcn)
+            )
             if out_dp is not None:
                 leg4_desc = f"departed DP area ({dp_out_lcn}) on {out_dp.date().isoformat()}, arrived {arr_lc} on {arr_dt.date().isoformat()}."
             else:
@@ -821,19 +969,29 @@ class DataTransformer:
             leg4_state = "IN_PROGRESS"
             parts = []
             if out_dp is not None:
-                parts.append(f"out-gated from DP area ({dp_out_lcn}) on {out_dp.date().isoformat()}")
+                parts.append(
+                    f"out-gated from DP area ({dp_out_lcn}) on {out_dp.date().isoformat()}"
+                )
             if rail_bits:
                 parts.append("Rail events: " + "; ".join(rail_bits))
             parts.append("arrival at last CY not recorded.")
             leg4_desc = "; ".join(parts)
         else:
-            if status in {"IN_INLAND_TRANSIT", "AT_LAST_CY", "DELIVERED", "EMPTY_RETURNED"}:
+            if status in {
+                "IN_INLAND_TRANSIT",
+                "AT_LAST_CY",
+                "DELIVERED",
+                "EMPTY_RETURNED",
+                "EMPTY_CONTAINER_RETURNED",
+            }:
                 leg4_state = "UNKNOWN"
                 leg4_desc = "status suggests DP→CY movement happened, but DP/rail/CY events are missing."
             else:
                 leg4_state = "PLANNED"
                 leg4_desc = "no DP→CY movement recorded yet."
-        leg_msgs.append(f"Leg 4 (DP → Last CY) [{leg4_state}]: {dp} → {last_cy_lcn}; {leg4_desc}")
+        leg_msgs.append(
+            f"Leg 4 (DP → Last CY) [{leg4_state}]: {dp} → {last_cy_lcn}; {leg4_desc}"
+        )
 
         # Leg 5 (CY -> Final + Empty return)
         has_delivery = delivery is not None
@@ -860,24 +1018,32 @@ class DataTransformer:
 
         details = []
         if out_cy is not None:
-            details.append(f"departed last CY ({cy_out_lcn}) on {out_cy.date().isoformat()}")
+            details.append(
+                f"departed last CY ({cy_out_lcn}) on {out_cy.date().isoformat()}"
+            )
         if has_delivery:
-            details.append(f"delivered at {delivery_lcn} on {delivery.date().isoformat()}")
-        else:
+            details.append(
+                f"delivered at {delivery_lcn} on {delivery.date().isoformat()}"
+            )
+        elif not has_empty:
             if eta_fd is not None:
                 details.append(f"delivery pending; ETA FD {eta_fd.date().isoformat()}")
             else:
                 details.append("delivery pending; ETA FD not available")
 
         if has_empty:
-            details.append(f"empty container returned at {empty_rt_lcn} on {empty_rt.date().isoformat()}")
+            details.append(
+                f"empty container returned at {empty_rt_lcn} on {empty_rt.date().isoformat()}"
+            )
         else:
             details.append("empty container return pending")
 
         leg5_desc = "; ".join(details) + f" ({delay_txt})"
-        leg_msgs.append(f"Leg 5 (Last CY → Final) [{leg5_state}]: {last_cy_lcn} → {final_dest}; {leg5_desc}")
+        leg_msgs.append(
+            f"Leg 5 (Last CY → Final) [{leg5_state}]: {last_cy_lcn} → {final_dest}; {leg5_desc}"
+        )
 
-        header = f"Overall shipment status: {status}"
+        header = f"Overall shipment status: {display_status}"
         return " || ".join([header] + leg_msgs)
 
     def _derive_milestones(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -885,7 +1051,9 @@ class DataTransformer:
         if out.columns.duplicated().any():
             dup = out.columns[out.columns.duplicated()].tolist()
             # Do not hard-fail; log (you can choose to raise)
-            self.logger.warning("Duplicate columns detected before milestone derivation: %s", dup)
+            self.logger.warning(
+                "Duplicate columns detected before milestone derivation: %s", dup
+            )
         out["milestones"] = out.apply(self._derive_milestones_row, axis=1)
         return out
 
@@ -908,7 +1076,9 @@ class DataTransformer:
     def _derive_carrier_summary_row(row: pd.Series) -> str:
         parts: List[str] = []
         final_carrier_name = DataTransformer._safe_text(row.get("final_carrier_name"))
-        true_carrier_scac_name = DataTransformer._safe_text(row.get("true_carrier_scac_name"))
+        true_carrier_scac_name = DataTransformer._safe_text(
+            row.get("true_carrier_scac_name")
+        )
 
         if final_carrier_name:
             parts.append(f"Operated by {final_carrier_name}")
@@ -957,11 +1127,13 @@ class DataTransformer:
         if final_dest and final_dest != pod:
             route_parts.append(f"Final: {final_dest}")
 
-        return " -> ".join(route_parts)
+        return " \u2192 ".join(route_parts)
 
     def _derive_port_route_summary(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
-        out["port_route_summary"] = out.apply(self._derive_port_route_summary_row, axis=1)
+        out["port_route_summary"] = out.apply(
+            self._derive_port_route_summary_row, axis=1
+        )
         return out
 
     # -------------------------------------------------------------------------
@@ -977,7 +1149,9 @@ class DataTransformer:
 
         def _source_month_tag(row: pd.Series) -> Optional[str]:
             etd = DataTransformer._to_date_or_none(row.get("etd_lp_date"))
-            return etd.strftime("%b_%y").lower() if isinstance(etd, pd.Timestamp) else None
+            return (
+                etd.strftime("%b_%y").lower() if isinstance(etd, pd.Timestamp) else None
+            )
 
         out["source_group"] = out.apply(_source_group, axis=1)
         out["source_month_tag"] = out.apply(_source_month_tag, axis=1)
@@ -990,11 +1164,6 @@ class DataTransformer:
     def _fmt_value_for_text(val: Any) -> Optional[str]:
         if val is None:
             return None
-        try:
-            if pd.isna(val):
-                return None
-        except TypeError:
-            pass
 
         if isinstance(val, (list, tuple, set)):
             cleaned: List[str] = []
@@ -1013,6 +1182,11 @@ class DataTransformer:
                     if s:
                         cleaned.append(s)
             return ", ".join(cleaned) if cleaned else None
+        try:
+            if pd.isna(val):
+                return None
+        except (TypeError, ValueError):
+            pass
 
         if hasattr(val, "strftime"):
             try:
@@ -1023,49 +1197,88 @@ class DataTransformer:
         s = str(val).strip()
         return s or None
 
+    @staticmethod
+    def _fmt_event(
+        label: str, date_val: Optional[str], lcn_val: Optional[str]
+    ) -> Optional[str]:
+        if not date_val and not lcn_val:
+            return None
+        if date_val and lcn_val:
+            return f"{label}: {date_val} @ {lcn_val}"
+        if date_val:
+            return f"{label}: {date_val}"
+        return f"{label} location: {lcn_val}"
+
     @classmethod
     def _build_combined_content(cls, row: pd.Series) -> str:
         parts: List[str] = []
 
         consignee_name = cls._fmt_value_for_text(row.get("consignee_name"))
         container_number = cls._fmt_value_for_text(row.get("container_number"))
+        container_type = cls._fmt_value_for_text(row.get("container_type"))
         destination_service = cls._fmt_value_for_text(row.get("destination_service"))
         shipment_status = cls._fmt_value_for_text(row.get("shipment_status"))
+        display_status = shipment_status
+        if shipment_status and shipment_status.upper() in {
+            "EMPTY_RETURNED",
+            "EMPTY_CONTAINER_RETURNED",
+        }:
+            display_status = "EMPTY CONTAINER RETURNED"
         hot_container_flag = row.get("hot_container_flag")  # boolean
         seal_number = cls._fmt_value_for_text(row.get("seal_number"))
 
         load_port = cls._fmt_value_for_text(row.get("load_port"))
         discharge_port = cls._fmt_value_for_text(row.get("discharge_port"))
         final_destination = cls._fmt_value_for_text(row.get("final_destination"))
-        last_cy_lcn = cls._fmt_value_for_text(row.get("equipment_arrived_at_last_cy_lcn"))
+        last_cy_lcn = cls._fmt_value_for_text(
+            row.get("equipment_arrived_at_last_cy_lcn")
+        )
 
         header_fragments: List[str] = []
 
         if hot_container_flag:
             header_fragments.append("HOT CONTAINER")
 
-        if container_number and consignee_name:
-            header_fragments.append(f"Container: {container_number} | Consignee: {consignee_name}")
-        elif container_number:
-            header_fragments.append(f"Container: {container_number}")
+        container_label = container_number
+        if container_number and container_type:
+            container_label = f"{container_number} ({container_type})"
+
+        if container_label and consignee_name:
+            header_fragments.append(
+                f"Container: {container_label} | Consignee: {consignee_name}"
+            )
+        elif container_label:
+            header_fragments.append(f"Container: {container_label}")
         elif consignee_name:
             header_fragments.append(f"Consignee: {consignee_name}")
+
+        if container_type and not container_number:
+            header_fragments.append(f"Container Type: {container_type}")
 
         if seal_number:
             header_fragments.append(f"Seal Number: {seal_number}")
 
         route_bits: List[str] = []
-        if load_port: route_bits.append(f"Origin/Load: {load_port}")
-        if discharge_port: route_bits.append(f"Discharge: {discharge_port}")
-        if final_destination: route_bits.append(f"Final Destination: {final_destination}")
-        if last_cy_lcn: route_bits.append(f"Last CY location: {last_cy_lcn}")
+        if load_port:
+            route_bits.append(f"Origin/Load: {load_port}")
+        if discharge_port and last_cy_lcn:
+            route_bits.append(
+                f"Discharge: {discharge_port} \u2192 Last CY location: {last_cy_lcn}"
+            )
+        else:
+            if discharge_port:
+                route_bits.append(f"Discharge: {discharge_port}")
+            if last_cy_lcn:
+                route_bits.append(f"Last CY location: {last_cy_lcn}")
+        if final_destination:
+            route_bits.append(f"Final Destination: {final_destination}")
         if route_bits:
             header_fragments.append(" | ".join(route_bits))
 
         if destination_service:
             header_fragments.append(f"Destination service: {destination_service}")
-        if shipment_status:
-            header_fragments.append(f"Current shipment status: {shipment_status}")
+        if display_status:
+            header_fragments.append(f"Current shipment status: {display_status}")
 
         if header_fragments:
             parts.append(" | ".join(header_fragments))
@@ -1082,10 +1295,14 @@ class DataTransformer:
         fd_delayed_dur = cls._fmt_value_for_text(row.get("fd_delayed_dur"))
 
         key_dates: List[str] = []
-        if etd_lp_date: key_dates.append(f"ETD LP: {etd_lp_date}")
-        if eta_dp_date: key_dates.append(f"ETA DP: {eta_dp_date}")
-        if optimal_ata_dp_date: key_dates.append(f"ATA DP (optimal): {optimal_ata_dp_date}")
-        if optimal_eta_fd_date: key_dates.append(f"ETA FD (optimal): {optimal_eta_fd_date}")
+        if etd_lp_date:
+            key_dates.append(f"ETD LP: {etd_lp_date}")
+        if eta_dp_date:
+            key_dates.append(f"ETA DP: {eta_dp_date}")
+        if optimal_ata_dp_date:
+            key_dates.append(f"ATA DP (optimal): {optimal_ata_dp_date}")
+        if optimal_eta_fd_date:
+            key_dates.append(f"ETA FD (optimal): {optimal_eta_fd_date}")
 
         delay_bits: List[str] = []
         if delayed_dp and dp_delayed_dur is not None:
@@ -1120,69 +1337,290 @@ class DataTransformer:
 
         # Timeline
         milestones = cls._fmt_value_for_text(row.get("milestones"))
-        critical_dates_summary = cls._fmt_value_for_text(row.get("critical_dates_summary"))
+        critical_dates_summary = cls._fmt_value_for_text(
+            row.get("critical_dates_summary")
+        )
         delay_reason_summary = cls._fmt_value_for_text(row.get("delay_reason_summary"))
         workflow_gap_flags = cls._fmt_value_for_text(row.get("workflow_gap_flags"))
 
         timeline_lines: List[str] = []
-        if milestones: timeline_lines.append(f"Milestones: {milestones}")
-        if critical_dates_summary: timeline_lines.append(f"Critical dates: {critical_dates_summary}")
-        if delay_reason_summary: timeline_lines.append(f"Delay analysis: {delay_reason_summary}")
+        if milestones:
+            timeline_lines.append(f"Milestones: {milestones}")
+        if critical_dates_summary:
+            timeline_lines.append(f"Critical dates: {critical_dates_summary}")
+        if delay_reason_summary:
+            timeline_lines.append(f"Delay analysis: {delay_reason_summary}")
         if workflow_gap_flags and workflow_gap_flags.lower() != "none_detected":
             timeline_lines.append(f"Workflow gaps: {workflow_gap_flags}")
         if timeline_lines:
             parts.append(" ".join(timeline_lines))
 
+        # Operational status & compliance
+        current_departure_status = cls._fmt_value_for_text(
+            row.get("current_departure_status")
+        )
+        current_arrival_status = cls._fmt_value_for_text(
+            row.get("current_arrival_status")
+        )
+        filing_856_status = cls._fmt_value_for_text(row.get("856_filing_status"))
+        get_isf_submission_date = cls._fmt_value_for_text(
+            row.get("get_isf_submission_date")
+        )
+        delivery_to_consignee_date = cls._fmt_value_for_text(
+            row.get("delivery_to_consignee_date")
+        )
+        empty_container_return_date = cls._fmt_value_for_text(
+            row.get("empty_container_return_date")
+        )
+
+        def _is_no(val: Optional[str]) -> bool:
+            return isinstance(val, str) and val.strip().lower() == "no"
+
+        if delivery_to_consignee_date or empty_container_return_date:
+            if _is_no(current_departure_status):
+                current_departure_status = None
+            if _is_no(current_arrival_status):
+                current_arrival_status = None
+
+        ops_status_bits: List[str] = []
+        if current_departure_status:
+            ops_status_bits.append(
+                f"Current departure status: {current_departure_status}"
+            )
+        if current_arrival_status:
+            ops_status_bits.append(f"Current arrival status: {current_arrival_status}")
+        if ops_status_bits:
+            parts.append("Operational status: " + " | ".join(ops_status_bits))
+
+        compliance_bits: List[str] = []
+        if filing_856_status:
+            compliance_bits.append(f"856 filing status: {filing_856_status}")
+        if get_isf_submission_date:
+            compliance_bits.append(f"ISF submission: {get_isf_submission_date}")
+        if compliance_bits:
+            parts.append("Compliance: " + " | ".join(compliance_bits))
+
+        # Additional operational events
+        in_dc_date = cls._fmt_value_for_text(row.get("in-dc_date"))
+        cargo_ready_date = cls._fmt_value_for_text(row.get("cargo_ready_date"))
+        cargo_receiveds_date = cls._fmt_value_for_text(row.get("cargo_receiveds_date"))
+
+        empty_container_dispatch_date = cls._fmt_value_for_text(
+            row.get("empty_container_dispatch_date")
+        )
+        empty_container_dispatch_lcn = cls._fmt_value_for_text(
+            row.get("empty_container_dispatch_lcn")
+        )
+        in_gate_date = cls._fmt_value_for_text(row.get("in_gate_date"))
+        in_gate_lcn = cls._fmt_value_for_text(row.get("in_gate_lcn"))
+
+        carrier_vehicle_load_date = cls._fmt_value_for_text(
+            row.get("carrier_vehicle_load_date")
+        )
+        carrier_vehicle_load_lcn = cls._fmt_value_for_text(
+            row.get("carrier_vehicle_load_lcn")
+        )
+        carrier_vehicle_unload_date = cls._fmt_value_for_text(
+            row.get("carrier_vehicle_unload_date")
+        )
+        carrier_vehicle_unload_lcn = cls._fmt_value_for_text(
+            row.get("carrier_vehicle_unload_lcn")
+        )
+
+        vehicle_departure_date = cls._fmt_value_for_text(
+            row.get("vehicle_departure_date")
+        )
+        vehicle_departure_lcn = cls._fmt_value_for_text(
+            row.get("vehicle_departure_lcn")
+        )
+        vehicle_arrival_date = cls._fmt_value_for_text(row.get("vehicle_arrival_date"))
+        vehicle_arrival_lcn = cls._fmt_value_for_text(row.get("vehicle_arrival_lcn"))
+
+        out_gate_from_dp_date = cls._fmt_value_for_text(
+            row.get("out_gate_from_dp_date")
+        )
+        out_gate_from_dp_lcn = cls._fmt_value_for_text(row.get("out_gate_from_dp_lcn"))
+        equipment_arrived_at_last_cy_date = cls._fmt_value_for_text(
+            row.get("equipment_arrived_at_last_cy_date")
+        )
+        equipment_arrived_at_last_cy_lcn = cls._fmt_value_for_text(
+            row.get("equipment_arrived_at_last_cy_lcn")
+        )
+        out_gate_at_last_cy_date = cls._fmt_value_for_text(
+            row.get("out_gate_at_last_cy_date")
+        )
+        out_gate_at_last_cy_lcn = cls._fmt_value_for_text(
+            row.get("out_gate_at_last_cy_lcn")
+        )
+
+        rail_load_dp_date = cls._fmt_value_for_text(row.get("rail_load_dp_date"))
+        rail_load_dp_lcn = cls._fmt_value_for_text(row.get("rail_load_dp_lcn"))
+        rail_departure_dp_date = cls._fmt_value_for_text(
+            row.get("rail_departure_dp_date")
+        )
+        rail_departure_dp_lcn = cls._fmt_value_for_text(
+            row.get("rail_departure_dp_lcn")
+        )
+        rail_arrival_destination_date = cls._fmt_value_for_text(
+            row.get("rail_arrival_destination_date")
+        )
+        rail_arrival_destination_lcn = cls._fmt_value_for_text(
+            row.get("rail_arrival_destination_lcn")
+        )
+
+        event_lines: List[str] = []
+        for line in [
+            cls._fmt_event("In-DC", in_dc_date, None),
+            cls._fmt_event("Cargo ready", cargo_ready_date, None),
+            cls._fmt_event("Cargo received", cargo_receiveds_date, None),
+            cls._fmt_event(
+                "Empty container dispatch",
+                empty_container_dispatch_date,
+                empty_container_dispatch_lcn,
+            ),
+            cls._fmt_event("In-gate", in_gate_date, in_gate_lcn),
+            cls._fmt_event(
+                "Carrier vehicle load",
+                carrier_vehicle_load_date,
+                carrier_vehicle_load_lcn,
+            ),
+            cls._fmt_event(
+                "Carrier vehicle unload",
+                carrier_vehicle_unload_date,
+                carrier_vehicle_unload_lcn,
+            ),
+            cls._fmt_event(
+                "Vehicle departure", vehicle_departure_date, vehicle_departure_lcn
+            ),
+            cls._fmt_event(
+                "Vehicle arrival", vehicle_arrival_date, vehicle_arrival_lcn
+            ),
+            cls._fmt_event(
+                "Out-gate from DP", out_gate_from_dp_date, out_gate_from_dp_lcn
+            ),
+            cls._fmt_event(
+                "Equipment arrived at last CY",
+                equipment_arrived_at_last_cy_date,
+                equipment_arrived_at_last_cy_lcn,
+            ),
+            cls._fmt_event(
+                "Out-gate at last CY", out_gate_at_last_cy_date, out_gate_at_last_cy_lcn
+            ),
+            cls._fmt_event("Rail load", rail_load_dp_date, rail_load_dp_lcn),
+            cls._fmt_event(
+                "Rail departure", rail_departure_dp_date, rail_departure_dp_lcn
+            ),
+            cls._fmt_event(
+                "Rail arrival",
+                rail_arrival_destination_date,
+                rail_arrival_destination_lcn,
+            ),
+        ]:
+            if line:
+                event_lines.append(line)
+        if event_lines:
+            parts.append("Operational events: " + " | ".join(event_lines))
+
         # Cargo & parties / identifiers (kept lean)
         cargo_weight_kg = cls._fmt_value_for_text(row.get("cargo_weight_kg"))
-        cargo_measure_cubic_meter = cls._fmt_value_for_text(row.get("cargo_measure_cubic_meter"))
+        cargo_measure_cubic_meter = cls._fmt_value_for_text(
+            row.get("cargo_measure_cubic_meter")
+        )
         cargo_count = cls._fmt_value_for_text(row.get("cargo_count"))
         cargo_um = cls._fmt_value_for_text(row.get("cargo_um"))
         cargo_detail_count = cls._fmt_value_for_text(row.get("cargo_detail_count"))
         detail_cargo_um = cls._fmt_value_for_text(row.get("detail_cargo_um"))
+        co2_tank_on_wheel = cls._fmt_value_for_text(row.get("co2_tank_on_wheel"))
+        co2_well_to_wheel = cls._fmt_value_for_text(row.get("co2_well_to_wheel"))
+        demurrage_free_days = cls._fmt_value_for_text(row.get("demurrage_free_days"))
+        detention_free_days = cls._fmt_value_for_text(row.get("detention_free_days"))
 
         cargo_bits: List[str] = []
         metrics: List[str] = []
-        if cargo_weight_kg: metrics.append(f"weight {cargo_weight_kg} kg")
-        if cargo_measure_cubic_meter: metrics.append(f"volume {cargo_measure_cubic_meter} m3")
-        if cargo_count and cargo_um: metrics.append(f"Cargo count: {cargo_count} {cargo_um}")
-        elif cargo_count: metrics.append(f"Cargo count: {cargo_count}")
+        if cargo_weight_kg:
+            metrics.append(f"weight {cargo_weight_kg} kg")
+        if cargo_measure_cubic_meter:
+            metrics.append(f"volume {cargo_measure_cubic_meter} m3")
+        if cargo_count and cargo_um:
+            metrics.append(f"Cargo count: {cargo_count} {cargo_um}")
+        elif cargo_count:
+            metrics.append(f"Cargo count: {cargo_count}")
         if cargo_detail_count and detail_cargo_um:
             metrics.append(f"Detail cargo: {cargo_detail_count} {detail_cargo_um}")
         if metrics:
-            cargo_bits.append("Cargo & CO2: Cargo metrics: " + " ".join(metrics))
+            cargo_bits.append("Cargo metrics: " + " ".join(metrics))
+        co2_bits: List[str] = []
+        if co2_tank_on_wheel:
+            co2_bits.append(f"tank-to-wheel {co2_tank_on_wheel}")
+        if co2_well_to_wheel:
+            co2_bits.append(f"well-to-wheel {co2_well_to_wheel}")
+        if co2_bits:
+            cargo_bits.append("CO2: " + " | ".join(co2_bits))
         if cargo_bits:
             parts.append(" ".join(cargo_bits))
+
+        free_days_bits: List[str] = []
+        if demurrage_free_days:
+            free_days_bits.append(f"Demurrage free days: {demurrage_free_days}")
+        if detention_free_days:
+            free_days_bits.append(f"Detention free days: {detention_free_days}")
+        if free_days_bits:
+            parts.append("Free days: " + " | ".join(free_days_bits))
 
         po_numbers = cls._fmt_value_for_text(row.get("po_numbers"))
         booking_numbers = cls._fmt_value_for_text(row.get("booking_numbers"))
         fcr_numbers = cls._fmt_value_for_text(row.get("fcr_numbers"))
         obl_nos = cls._fmt_value_for_text(row.get("obl_nos"))
+        job_no = cls._fmt_value_for_text(row.get("job_no"))
+        mcs_hbl = cls._fmt_value_for_text(row.get("mcs_hbl"))
+        service_contract_number = cls._fmt_value_for_text(
+            row.get("service_contract_number")
+        )
 
         supplier_vendor_name = cls._fmt_value_for_text(row.get("supplier_vendor_name"))
         manufacturer_name = cls._fmt_value_for_text(row.get("manufacturer_name"))
         ship_to_party_name = cls._fmt_value_for_text(row.get("ship_to_party_name"))
         job_type = cls._fmt_value_for_text(row.get("job_type"))
         transport_mode = cls._fmt_value_for_text(row.get("transport_mode"))
-        booking_approval_status = cls._fmt_value_for_text(row.get("booking_approval_status"))
+        booking_approval_status = cls._fmt_value_for_text(
+            row.get("booking_approval_status")
+        )
 
         id_line: List[str] = []
-        if po_numbers: id_line.append(f"PO Numbers: {po_numbers}")
-        if booking_numbers: id_line.append(f"Booking Numbers: {booking_numbers}")
-        if fcr_numbers: id_line.append(f"FCR Numbers: {fcr_numbers}")
-        if obl_nos: id_line.append(f"Ocean BL Numbers: {obl_nos}")
+        if po_numbers:
+            id_line.append(f"PO Numbers: {po_numbers}")
+        if booking_numbers:
+            id_line.append(f"Booking Numbers: {booking_numbers}")
+        if fcr_numbers:
+            id_line.append(f"FCR Numbers: {fcr_numbers}")
+        if obl_nos:
+            id_line.append(f"Ocean BL Numbers: {obl_nos}")
+        if job_no:
+            id_line.append(f"Job No: {job_no}")
+        if mcs_hbl:
+            id_line.append(f"MCS HBL: {mcs_hbl}")
+        if service_contract_number:
+            id_line.append(f"Service Contract: {service_contract_number}")
         if id_line:
             parts.append("References: " + " | ".join(id_line))
 
         party_line: List[str] = []
-        if consignee_name: party_line.append(f"Consignee: {consignee_name}")
-        if ship_to_party_name: party_line.append(f"Ship-to party: {ship_to_party_name}")
-        if supplier_vendor_name: party_line.append(f"Supplier/Vendor: {supplier_vendor_name}")
-        if manufacturer_name: party_line.append(f"Manufacturer: {manufacturer_name}")
-        if job_type: party_line.append(f"Job type: {job_type}")
-        if transport_mode: party_line.append(f"Transport mode: {transport_mode}")
-        if hot_container_flag is not None: party_line.append(f"Hot container flag: {hot_container_flag}")
-        if booking_approval_status: party_line.append(f"Booking approval status: {booking_approval_status}")
+        if consignee_name:
+            party_line.append(f"Consignee: {consignee_name}")
+        if ship_to_party_name:
+            party_line.append(f"Ship-to party: {ship_to_party_name}")
+        if supplier_vendor_name:
+            party_line.append(f"Supplier/Vendor: {supplier_vendor_name}")
+        if manufacturer_name:
+            party_line.append(f"Manufacturer: {manufacturer_name}")
+        if job_type:
+            party_line.append(f"Job type: {job_type}")
+        if transport_mode:
+            party_line.append(f"Transport mode: {transport_mode}")
+        if hot_container_flag is not None:
+            party_line.append(f"Hot container flag: {hot_container_flag}")
+        if booking_approval_status:
+            party_line.append(f"Booking approval status: {booking_approval_status}")
         if party_line:
             parts.append("Parties & service: " + " | ".join(party_line))
 

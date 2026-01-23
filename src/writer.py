@@ -131,12 +131,18 @@ class JsonlWriter:
       - metadata: dict of core attributes (container_number, ports, status, tags...)
     """
 
-    def __init__(self, config: Optional[JsonlWriterConfig] = None, logger_: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[JsonlWriterConfig] = None,
+        logger_: Optional[logging.Logger] = None,
+    ) -> None:
         self.config = config or JsonlWriterConfig()
         self.logger = logger_ or logger
         self.generated_files: List[Path] = []
 
-    def write(self, docs: Iterable[Dict[str, Any]], mmmyy: Optional[str] = None) -> Path:
+    def write(
+        self, docs: Iterable[Dict[str, Any]], mmmyy: Optional[str] = None
+    ) -> Path:
         """
         Write docs to: shipment_<mmmyy>_<counter>.jsonl
 
@@ -166,7 +172,9 @@ class JsonlWriter:
         with out_path.open("w", encoding="utf-8") as f:
             for idx, doc in enumerate(docs_list, start=1):
                 normalized = self._normalize_doc(doc, fallback_index=idx)
-                f.write(json.dumps(normalized, ensure_ascii=False, default=_json_default))
+                f.write(
+                    json.dumps(normalized, ensure_ascii=False, default=_json_default)
+                )
                 f.write("\n")
                 written += 1
 
@@ -174,7 +182,9 @@ class JsonlWriter:
         self.generated_files.append(out_path)
         return out_path
 
-    def _normalize_doc(self, doc: Dict[str, Any], fallback_index: int) -> Dict[str, Any]:
+    def _normalize_doc(
+        self, doc: Dict[str, Any], fallback_index: int
+    ) -> Dict[str, Any]:
         """
         Ensure:
         - metadata is dict (never a string / container number)
@@ -193,7 +203,9 @@ class JsonlWriter:
 
             # Handle common bug: metadata accidentally equals container_number or other scalar.
             # _ensure_dict_metadata already wraps it, but we also try to populate proper metadata.
-            if "_raw_metadata" in metadata and isinstance(metadata["_raw_metadata"], str):
+            if "_raw_metadata" in metadata and isinstance(
+                metadata["_raw_metadata"], str
+            ):
                 # If the raw metadata looks like a container number, store it properly.
                 metadata.setdefault("container_number", metadata["_raw_metadata"])
 
@@ -216,9 +228,13 @@ class JsonlWriter:
 
             # RLS consignee codes: prefer at top-level or inside metadata
             if "consignee_codes" in doc:
-                metadata["consignee_codes"] = _coerce_consignee_codes(doc.get("consignee_codes"))
+                metadata["consignee_codes"] = _coerce_consignee_codes(
+                    doc.get("consignee_codes")
+                )
             else:
-                metadata["consignee_codes"] = _coerce_consignee_codes(metadata.get("consignee_codes"))
+                metadata["consignee_codes"] = _coerce_consignee_codes(
+                    metadata.get("consignee_codes")
+                )
 
             out = {
                 "document_id": str(doc_id),
@@ -230,11 +246,18 @@ class JsonlWriter:
             return out
 
         # Case B: raw row-like dict from dataframe (no id/content keys)
-        doc_id = doc.get("carr_eqp_uid") or doc.get("job_no") or doc.get("container_number") or f"doc_{fallback_index}"
+        doc_id = (
+            doc.get("carr_eqp_uid")
+            or doc.get("job_no")
+            or doc.get("container_number")
+            or f"doc_{fallback_index}"
+        )
         content = doc.get("combined_content") or doc.get("milestones") or ""
 
         metadata = dict(doc)
-        metadata["consignee_codes"] = _coerce_consignee_codes(doc.get("consignee_codes"))
+        metadata["consignee_codes"] = _coerce_consignee_codes(
+            doc.get("consignee_codes")
+        )
         if "carr_eqp_uid" in metadata:
             del metadata["carr_eqp_uid"]
         if "consignee_raw" in metadata:
@@ -275,26 +298,30 @@ class JsonlWriter:
         """
         Uploads all generated files to the specified Azure Blob container.
         """
-        self.logger.info(f"Uploading {len(self.generated_files)} file(s) to container '{container_name}'...")
+        self.logger.info(
+            f"Uploading {len(self.generated_files)} file(s) to container '{container_name}'..."
+        )
         try:
             blob_service_client = BlobServiceClient.from_connection_string(conn_str)
             container_client = blob_service_client.get_container_client(container_name)
-            
+
             # Ensure container exists
             if not container_client.exists():
-                self.logger.warning(f"Container '{container_name}' does not exist. Creating it...")
+                self.logger.warning(
+                    f"Container '{container_name}' does not exist. Creating it..."
+                )
                 container_client.create_container()
-            
+
             for file_path in self.generated_files:
                 blob_name = file_path.name
                 blob_client = container_client.get_blob_client(blob_name)
-                
+
                 self.logger.info(f"Uploading {blob_name}...")
                 with open(file_path, "rb") as data:
                     blob_client.upload_blob(data, overwrite=True)
-                    
+
             self.logger.info("All files uploaded successfully.")
-            
+
         except Exception as e:
             self.logger.error(f"Upload failed: {e}", exc_info=True)
             raise

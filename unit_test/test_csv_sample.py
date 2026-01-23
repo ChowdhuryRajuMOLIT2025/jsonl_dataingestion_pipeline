@@ -1,13 +1,14 @@
-
-import pandas as pd
 import os
 import sys
 from pathlib import Path
+
+import pandas as pd
 
 # Add parent directory to path to allow importing src
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from src.config import COLUMN_MAPPING
+
 
 def inspect_csv():
     """
@@ -17,7 +18,7 @@ def inspect_csv():
     # Use path relative to this script file, not CWD
     base_dir = Path(__file__).resolve().parent.parent
     download_dir = base_dir / "downloads"
-    
+
     if not download_dir.exists():
         print(f"Directory not found: {download_dir.resolve()}")
         # Check CWD for debugging
@@ -29,24 +30,36 @@ def inspect_csv():
     if not csv_files:
         print("No CSV files found in downloads/.")
         return
-        
+
     latest_csv = max(csv_files, key=os.path.getmtime)
     print(f"Inspecting file: {latest_csv.name}")
     print("-" * 50)
 
     try:
         # Read a sample (first 100 rows) with strict string typing
-        df = pd.read_csv(latest_csv, dtype=str, keep_default_na=False, nrows=100, encoding="utf-8-sig")
+        df = pd.read_csv(
+            latest_csv,
+            dtype=str,
+            keep_default_na=False,
+            nrows=100,
+            encoding="utf-8-sig",
+        )
     except UnicodeDecodeError:
         print("UTF-8 strict failed, trying iso-8859-1...")
-        df = pd.read_csv(latest_csv, dtype=str, keep_default_na=False, nrows=100, encoding="iso-8859-1")
+        df = pd.read_csv(
+            latest_csv,
+            dtype=str,
+            keep_default_na=False,
+            nrows=100,
+            encoding="iso-8859-1",
+        )
 
     print(f"Loaded {len(df)} sample rows.")
-    
+
     # 1. Header Check
     source_cols = set(df.columns)
     mapped_source_cols = set(COLUMN_MAPPING.keys())
-    
+
     # Cleaning headers as the pipeline does
     clean_headers = (
         pd.Index(df.columns)
@@ -59,11 +72,11 @@ def inspect_csv():
     source_cols = set(clean_headers)
 
     print(f"\nTotal Columns in CSV: {len(source_cols)}")
-    
+
     missing_required = mapped_source_cols - source_cols
-    # Filtering out columns that might be renamed or calculated? 
+    # Filtering out columns that might be renamed or calculated?
     # Actually COLUMN_MAPPING keys ARE the expected source headers.
-    
+
     if missing_required:
         print(f"\n[WARNING] The following mapped columns are MISSING in the CSV:")
         for c in missing_required:
@@ -78,9 +91,10 @@ def inspect_csv():
         # Only print keys that are in our mapping to reduce noise
         if k in mapped_source_cols:
             print(f"  {k} -> {v}")
-            
+
     print("-" * 50)
     print("CSV Inspection Completed.")
+
 
 if __name__ == "__main__":
     inspect_csv()
