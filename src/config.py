@@ -119,6 +119,7 @@ COLUMN_MAPPING: Dict[str, str] = {
     "Detail Cargo UM": "detail_cargo_um",
     "856 Filing Status": "856_filing_status",
     "Get_ISF_submission_dt": "get_isf_submission_date",
+    "get_isf_submission_date": "get_isf_submission_date",
     "Seal Number": "seal_number",
     "In Gate Date": "in_gate_date",
     "In Gate Lcn": "in_gate_lcn",

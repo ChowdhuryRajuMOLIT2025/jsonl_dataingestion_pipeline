@@ -13,6 +13,7 @@ Key fixes vs your current file:
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -141,14 +142,98 @@ class DataTransformer:
         out = df.copy()
         out.columns = normalized_cols
 
-        expected = list(COLUMN_MAPPING.keys())
-        actual = list(out.columns)
+        # expected = list(COLUMN_MAPPING.keys().lower())
+        # expected = [k.lower() for k in COLUMN_MAPPING.keys()]
+        # expected = list(COLUMN_MAPPING.values())
+        # actual = list(out.columns)
+        # expected = [k.lower() for k in COLUMN_MAPPING.keys()]
+        # actual = [c.lower() for c in out.columns]
+        # missing = [c for c in expected if c not in actual]
+        # extra = [c for c in actual if c not in expected]
 
-        missing = [c for c in expected if c not in actual]
-        extra = [c for c in actual if c not in expected]
+        actual_raw = list(out.columns)
 
-        self.logger.info("Columns in COLUMN_MAPPING: %d", len(expected))
-        self.logger.info("Columns after normalization: %d", len(actual))
+        def _norm_header_key(val: Any) -> str:
+            text = str(val)
+            text = re.sub(r"[\r\n\t]+", " ", text)
+            text = re.sub(r"\s+", " ", text)
+            text = text.strip().lower()
+            text = re.sub(r"[^a-z0-9]+", "_", text)
+            text = re.sub(r"_+", "_", text).strip("_")
+            return text
+
+        expected_raw_norm = [_norm_header_key(k) for k in COLUMN_MAPPING.keys()]
+        expected_canon_norm = [_norm_header_key(v) for v in COLUMN_MAPPING.values()]
+        actual_norm = [_norm_header_key(c) for c in actual_raw]
+
+        schema_mode = None
+        expected = expected_raw_norm
+        actual = actual_norm
+
+        if set(actual_norm) == set(expected_canon_norm):
+            schema_mode = "canonical"
+            expected = expected_canon_norm
+        elif set(actual_norm) == set(expected_raw_norm):
+            schema_mode = "raw_or_snake"
+            expected = expected_raw_norm
+
+        # missing = [c for c in expected if c not in actual]
+        # extra = [c for c in actual if c not in expected]
+
+        if schema_mode is None:
+            missing_raw = [c for c in expected_raw_norm if c not in actual_norm]
+            extra_raw = [c for c in actual_norm if c not in expected_raw_norm]
+            missing_canon = [c for c in expected_canon_norm if c not in actual_norm]
+            extra_canon = [c for c in actual_norm if c not in expected_canon_norm]
+            if (len(missing_canon) + len(extra_canon)) < (
+                len(missing_raw) + len(extra_raw)
+            ):
+                schema_mode = "canonical"
+                expected = expected_canon_norm
+                missing = missing_canon
+                extra = extra_canon
+            else:
+                schema_mode = "raw_or_snake"
+                expected = expected_raw_norm
+                missing = missing_raw
+                extra = extra_raw
+
+        norm_to_canonical: Dict[str, str] = {}
+        for raw_name, canonical_name in COLUMN_MAPPING.items():
+            for key in (raw_name, canonical_name):
+                norm_key = _norm_header_key(key)
+                if norm_key not in norm_to_canonical:
+                    norm_to_canonical[norm_key] = canonical_name
+                elif norm_to_canonical[norm_key] != canonical_name:
+                    self.logger.warning(
+                        "Duplicate normalized header '%s' maps to both '%s' and '%s'.",
+                        norm_key,
+                        norm_to_canonical[norm_key],
+                        canonical_name,
+                    )
+
+        expected_canon: List[str] = []
+        _seen_expected: set = set()
+        for v in COLUMN_MAPPING.values():
+            if v in _seen_expected:
+                continue
+            expected_canon.append(v)
+            _seen_expected.add(v)
+        actual_canon_set = set()
+        unmapped_cols: List[str] = []
+        for col in out.columns:
+            norm_col = _norm_header_key(col)
+            if norm_col in norm_to_canonical:
+                actual_canon_set.add(norm_to_canonical[norm_col])
+            else:
+                unmapped_cols.append(col)
+
+        missing = [c for c in expected_canon if c not in actual_canon_set]
+        extra = [_norm_header_key(c) for c in unmapped_cols]
+
+        self.logger.info("Columns in COLUMN_MAPPING: %d", len(expected_canon))
+        self.logger.info("Columns after normalization: %d", len(actual_norm))
+        self.logger.info("Header schema mode detected: %s", schema_mode)
         self.logger.info("Missing (expected but not in raw): %d", len(missing))
         self.logger.info("Extra (in raw but not mapped): %d", len(extra))
 
@@ -163,9 +248,20 @@ class DataTransformer:
                 f"(missing={len(missing)}, extra={len(extra)})."
             )
 
+        rename_map: Dict[str, str] = {}
+        for col in out.columns:
+            norm_col = _norm_header_key(col)
+            if norm_col in norm_to_canonical:
+                rename_map[col] = norm_to_canonical[norm_col]
+
+        if rename_map:
+            out = out.rename(columns=rename_map)
+
         # Position check
+        expected_pos = list(expected_canon)
+        actual_pos = list(out.columns)
         mismatches: List[Tuple[int, str, str]] = []
-        for i, (act, exp) in enumerate(zip(actual, expected)):
+        for i, (act, exp) in enumerate(zip(actual_pos, expected_pos)):
             if act != exp:
                 mismatches.append((i, act, exp))
 
@@ -182,7 +278,10 @@ class DataTransformer:
             self.logger.error("Context around first mismatch:")
             for i in range(start, end):
                 self.logger.error(
-                    "  [%d] actual='%s' | expected='%s'", i, actual[i], expected[i]
+                    "  [%d] actual='%s' | expected='%s'",
+                    i,
+                    actual_pos[i],
+                    expected_pos[i],
                 )
             raise ValueError("HEADER VALIDATION FAILED: name/position mismatch.")
 
