@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
@@ -101,6 +102,19 @@ class ShipmentDataPipeline:
             processed_df = transformer.run_pipeline(df)
             t2 = time.time()
             logger.info(f"Step 2: Transformation completed in {t2 - t1:.2f} seconds.")
+
+            # 2.5 Parquet snapshot (full transformed dataset)
+            parquet_dir = Path("output_parquet")
+            parquet_dir.mkdir(parents=True, exist_ok=True)
+            parquet_path = parquet_dir / "master_ds.parquet"
+            if parquet_path.exists():
+                backup_dir = parquet_dir / "backup"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                backup_name = f"master_ds_{datetime.now().strftime('%d%b%y').lower()}.parquet"
+                backup_path = backup_dir / backup_name
+                parquet_path.replace(backup_path)
+            processed_df.to_parquet(parquet_path, index=False)
+            logger.info("Parquet snapshot saved to %s", parquet_path)
 
             # 3. Writing
             logger.info("Starting Writing Step (JSONL Generation)...")

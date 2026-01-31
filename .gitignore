@@ -2,6 +2,8 @@
 logs/
 downloads/
 output_jsonl/
+output_parquet/
+*.parquet
 .ipynb_checkpoints/
 shipment_dec25.jsonl
 shipments_dec25.jsonl
