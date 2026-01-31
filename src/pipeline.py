@@ -110,7 +110,9 @@ class ShipmentDataPipeline:
             if parquet_path.exists():
                 backup_dir = parquet_dir / "backup"
                 backup_dir.mkdir(parents=True, exist_ok=True)
-                backup_name = f"master_ds_{datetime.now().strftime('%d%b%y').lower()}.parquet"
+                backup_name = (
+                    f"master_ds_{datetime.now().strftime('%d%b%y').lower()}.parquet"
+                )
                 backup_path = backup_dir / backup_name
                 parquet_path.replace(backup_path)
             processed_df.to_parquet(parquet_path, index=False)

@@ -12,3 +12,4 @@ docs/walkthrough.md
 __pycache__/
 *.pyc
 jsonl_data_ingestion.py.bak
+csv_to_parquet.ipynb
