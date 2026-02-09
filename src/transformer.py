@@ -680,7 +680,7 @@ class DataTransformer:
             return "AT_DP"
 
         # Ocean transit if departed TS (or load->ocean) but not yet at DP
-        if isinstance(atd_flp, pd.Timestamp) and (
+        if isinstance(atd_flp, pd.Timestamp) or isinstance(atd_lp, pd.Timestamp) and (
             not isinstance(optimal_ata_dp, pd.Timestamp) or optimal_ata_dp > today
         ):
             return "IN_OCEAN_TRANSIT"
