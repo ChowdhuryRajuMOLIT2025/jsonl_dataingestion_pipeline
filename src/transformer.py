@@ -72,6 +72,12 @@ class DataTransformer:
             "Basic cleaning done (strings, booleans, IDs, dates). Shape=%s", df.shape
         )
 
+        df = self._enforce_flp_date_consistency(df)
+        self.logger.info(
+            "FLP date consistency enforced (final_load_port vs FLP dates). Shape=%s",
+            df.shape,
+        )
+
         df = self._derive_consignee_fields(df)
         self.logger.info("Consignee name/code derived. Shape=%s", df.shape)
 
@@ -303,6 +309,56 @@ class DataTransformer:
         out = self._parse_dates(out, DATE_COLUMNS, MULTI_VALUED_DATE_COLS)
         return out
 
+    def _enforce_flp_date_consistency(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Business rule:
+        If final_load_port is missing/blank, related FLP dates must be empty.
+        """
+        out = df.copy()
+
+        if "final_load_port" not in out.columns:
+            self.logger.warning(
+                "final_load_port not found; skipping FLP date consistency step."
+            )
+            return out
+
+        flp = out["final_load_port"].astype("string").str.strip()
+        missing_flp = flp.isna() | (flp == "") | flp.str.upper().isin(
+            {"NAN", "NULL", "NONE", "N/A"}
+        )
+
+        if not missing_flp.any():
+            return out
+
+        # Keep both common canonical names and client typo/variant aliases.
+        flp_date_cols = [
+            "etd_flp_date",
+            "eta_flp_date",
+            "ata_flp_date",
+            "ara_flp_date",
+            "atd_flp_date",
+        ]
+        existing_cols = [c for c in flp_date_cols if c in out.columns]
+        if not existing_cols:
+            self.logger.warning(
+                "No FLP date columns found; skipping FLP date consistency step."
+            )
+            return out
+
+        cleared_values = 0
+        for c in existing_cols:
+            before = out.loc[missing_flp, c].notna().sum()
+            out.loc[missing_flp, c] = None
+            cleared_values += int(before)
+
+        self.logger.info(
+            "FLP consistency: final_load_port missing in %d row(s); cleared %d FLP date value(s) across columns=%s",
+            int(missing_flp.sum()),
+            cleared_values,
+            existing_cols,
+        )
+        return out
+
     @staticmethod
     def _normalize_object_strings(df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
@@ -513,7 +569,7 @@ class DataTransformer:
         out["consignee_name"] = out[source_col].apply(self._extract_consignee_name)
         out["consignee_codes"] = out[source_col].apply(self._extract_consignee_code)
 
-        # If your downstream expects list for RLS (recommended), convert to list[str]
+        # If downstream expects list for RLS (recommended), convert to list[str]
         # Keep it minimal: single code -> [code], none -> []
         out["consignee_codes"] = out["consignee_codes"].apply(
             lambda x: [x] if isinstance(x, str) and x else []
@@ -528,11 +584,12 @@ class DataTransformer:
     def _derive_optimal_ata_dp_date(row: pd.Series) -> Optional[pd.Timestamp]:
         today = pd.Timestamp("today").normalize()
         ata_dp = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
-        derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
+        # derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
 
         if isinstance(ata_dp, pd.Timestamp):
             return ata_dp
         if isinstance(derived, pd.Timestamp) and derived <= today:
+        # if isinstance(derived, pd.Timestamp):
             return derived
         return None
 
