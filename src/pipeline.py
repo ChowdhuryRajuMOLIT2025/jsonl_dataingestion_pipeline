@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from .config import ENV_VARS, MAX_FILE_SIZE_BYTES
+from .config import ENV_VARS
 from .ingestor import DataIngestor
 from .transformer import DataTransformer
 from .writer import JsonlWriter, JsonlWriterConfig

@@ -323,8 +323,10 @@ class DataTransformer:
             return out
 
         flp = out["final_load_port"].astype("string").str.strip()
-        missing_flp = flp.isna() | (flp == "") | flp.str.upper().isin(
-            {"NAN", "NULL", "NONE", "N/A"}
+        missing_flp = (
+            flp.isna()
+            | (flp == "")
+            | flp.str.upper().isin({"NAN", "NULL", "NONE", "N/A"})
         )
 
         if not missing_flp.any():
@@ -595,7 +597,7 @@ class DataTransformer:
         derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
 
         # if isinstance(ata_dp, pd.Timestamp):
-            # return ata_dp
+        # return ata_dp
         if isinstance(derived, pd.Timestamp):
             return derived
         return None
@@ -624,45 +626,41 @@ class DataTransformer:
         eta = DataTransformer._to_date_or_none(row.get("eta_dp_date"))
         ata = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
 
-        # If actual arrival is known, compare against best ETA (fallback ETA DP).
-        if isinstance(ata, pd.Timestamp):
-            baseline = (
-                best_eta
-                if isinstance(best_eta, pd.Timestamp)
-                else (eta if isinstance(eta, pd.Timestamp) else None)
-            )
-            if isinstance(baseline, pd.Timestamp):
-                delay_days = int((ata - baseline).days)
-            else:
-                delay_days = 0
-
+        # 1) If ATA exists, delay is strictly ATA vs ETA DP.
+        if isinstance(ata, pd.Timestamp) and isinstance(eta, pd.Timestamp):
+            delay_days = int((ata - eta).days)
             if delay_days > 0:
-                label = "delay"
-            elif delay_days < 0:
-                label = "early"
-            else:
-                label = "on_time"
-            return label, delay_days
+                return "delay", delay_days
+            if delay_days < 0:
+                return "early", delay_days
+            return "on_time", delay_days
 
-        # No actual arrival yet: evaluate against best planned date.
-        planned = (
-            best_eta
-            if isinstance(best_eta, pd.Timestamp)
-            else (eta if isinstance(eta, pd.Timestamp) else None)
-        )
-        if isinstance(planned, pd.Timestamp):
-            delay_days = int((today - planned).days)
-            if planned > today:
-                delay_days = 0
-                label = "on_time"
-            else:
-                delay_days = max(0, delay_days)
-                label = "delay" if delay_days > 0 else "on_time"
-        else:
-            delay_days = 0
-            label = "on_time"
+        # 2) If ATA missing, evaluate against ETA DP and best ETA DP as requested.
+        if (
+            not isinstance(ata, pd.Timestamp)
+            and isinstance(eta, pd.Timestamp)
+            and isinstance(best_eta, pd.Timestamp)
+        ):
+            # eta < today and best_eta < today => best_eta - eta
+            if eta < today and best_eta < today:
+                delay_days = int((best_eta - eta).days)
+                if delay_days > 0:
+                    return "delay", delay_days
+                if delay_days < 0:
+                    return "early", delay_days
+                return "on_time", 0
 
-        return label, delay_days
+            # eta < today and best_eta > today => today - eta
+            if eta < today and best_eta > today:
+                delay_days = int((today - eta).days)
+                return ("delay", delay_days) if delay_days > 0 else ("on_time", 0)
+
+            # eta > today and best_eta > today => 0 (no real delay yet)
+            if eta > today and best_eta > today:
+                return "on_time", 0
+
+        # 3) Future/planned/insufficient-data cases should not be marked delayed.
+        return "on_time", 0
 
     @staticmethod
     def _derive_fd_delay(row: pd.Series) -> Tuple[str, float]:
@@ -740,7 +738,22 @@ class DataTransformer:
         last_cy_out = DataTransformer._to_date_or_none(
             row.get("out_gate_at_last_cy_date")
         )
-        best_eta_dp = DataTransformer._to_date_or_none(row.get("best_eta_dp_date"))
+        ata_dp = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
+        vehicle_arrival = DataTransformer._to_date_or_none(
+            row.get("vehicle_arrival_date")
+        )
+        carrier_vehicle_unload = DataTransformer._to_date_or_none(
+            row.get("carrier_vehicle_unload_date")
+        )
+        out_gate_from_dp = DataTransformer._to_date_or_none(
+            row.get("out_gate_from_dp_date")
+        )
+        carrier_vehicle_load = DataTransformer._to_date_or_none(
+            row.get("carrier_vehicle_load_date")
+        )
+        vehicle_departure = DataTransformer._to_date_or_none(
+            row.get("vehicle_departure_date")
+        )
         atd_flp = DataTransformer._to_date_or_none(row.get("atd_flp_date"))
         ata_flp = DataTransformer._to_date_or_none(row.get("ata_flp_date"))
         atd_lp = DataTransformer._to_date_or_none(row.get("atd_lp_date"))
@@ -756,12 +769,19 @@ class DataTransformer:
         if isinstance(last_cy_arr, pd.Timestamp):
             return "AT_LAST_CY"
 
-        if isinstance(best_eta_dp, pd.Timestamp) and best_eta_dp <= today:
+        if isinstance(ata_dp, pd.Timestamp):
             return "AT_DP"
 
-        # Ocean transit if departed TS (or load->ocean) but not yet at DP
-        if isinstance(atd_flp, pd.Timestamp) or isinstance(atd_lp, pd.Timestamp) and (
-            not isinstance(best_eta_dp, pd.Timestamp) or best_eta_dp > today
+        if any(
+            isinstance(v, pd.Timestamp)
+            for v in (vehicle_arrival, carrier_vehicle_unload, out_gate_from_dp)
+        ):
+            return "AT_DP"
+
+        # Ocean transit signals from departure/load events.
+        if any(
+            isinstance(v, pd.Timestamp)
+            for v in (carrier_vehicle_load, vehicle_departure, atd_lp, atd_flp)
         ):
             return "IN_OCEAN_TRANSIT"
 
@@ -817,6 +837,44 @@ class DataTransformer:
             )
             delivery = self._to_date_or_none(row.get("delivery_to_consignee_date"))
             empty_ret = self._to_date_or_none(row.get("empty_container_return_date"))
+
+            # Cargo Processing (before Leg 1)
+            cargo_ready = self._fmt_value_for_text(row.get("cargo_ready_date"))
+            cargo_received = self._fmt_value_for_text(row.get("cargo_receiveds_date"))
+            in_dc = self._fmt_value_for_text(row.get("in-dc_date"))
+            empty_dispatch = self._fmt_value_for_text(
+                row.get("empty_container_dispatch_date")
+            )
+            empty_dispatch_lcn = self._safe_text(
+                row.get("empty_container_dispatch_lcn")
+            )
+            in_gate = self._fmt_value_for_text(row.get("in_gate_date"))
+            in_gate_lcn = self._safe_text(row.get("in_gate_lcn"))
+
+            cargo_parts: List[str] = []
+            if cargo_ready:
+                cargo_parts.append(f"CARGO_READY {cargo_ready}")
+            if cargo_received:
+                cargo_parts.append(f"CARGO_RECEIVED {cargo_received}")
+            if in_dc:
+                cargo_parts.append(f"IN_DC {in_dc}")
+            if empty_dispatch and empty_dispatch_lcn:
+                cargo_parts.append(
+                    f"EMPTY_DISPATCH {empty_dispatch} @ {empty_dispatch_lcn}"
+                )
+            elif empty_dispatch:
+                cargo_parts.append(f"EMPTY_DISPATCH {empty_dispatch}")
+            elif empty_dispatch_lcn:
+                cargo_parts.append(f"EMPTY_DISPATCH_LCN {empty_dispatch_lcn}")
+            if in_gate and in_gate_lcn:
+                cargo_parts.append(f"IN_GATE {in_gate} @ {in_gate_lcn}")
+            elif in_gate:
+                cargo_parts.append(f"IN_GATE {in_gate}")
+            elif in_gate_lcn:
+                cargo_parts.append(f"IN_GATE_LCN {in_gate_lcn}")
+
+            if cargo_parts:
+                parts.append("Cargo Processing: " + ", ".join(cargo_parts))
 
             # Leg 1
             leg1_desc = f"{por or 'POR'} → {lp or 'LOAD'}"
@@ -1002,7 +1060,10 @@ class DataTransformer:
         atd_flp = d(row.get("atd_flp_date"))
 
         eta_dp = d(row.get("eta_dp_date"))
-        ata_dp = d(row.get("best_eta_dp_date"))
+        best_eta_dp = d(row.get("best_eta_dp_date"))
+        ata_dp = d(row.get("ata_dp_date"))
+        vehicle_arrival = d(row.get("vehicle_arrival_date"))
+        carrier_vehicle_unload = d(row.get("carrier_vehicle_unload_date"))
 
         out_dp = d(row.get("out_gate_from_dp_date"))
         equip_arr_cy = d(row.get("equipment_arrived_at_last_cy_date"))
@@ -1043,6 +1104,51 @@ class DataTransformer:
             fd_days = int(fd_dur)
 
         leg_msgs: List[str] = []
+
+        # Cargo Processing (upstream pre-leg events)
+        cargo_ready = DataTransformer._fmt_value_for_text(row.get("cargo_ready_date"))
+        cargo_received = DataTransformer._fmt_value_for_text(
+            row.get("cargo_receiveds_date")
+        )
+        in_dc = DataTransformer._fmt_value_for_text(row.get("in-dc_date"))
+        empty_dispatch = DataTransformer._fmt_value_for_text(
+            row.get("empty_container_dispatch_date")
+        )
+        empty_dispatch_lcn = DataTransformer._safe_text(
+            row.get("empty_container_dispatch_lcn")
+        )
+        in_gate = DataTransformer._fmt_value_for_text(row.get("in_gate_date"))
+        in_gate_lcn = DataTransformer._safe_text(row.get("in_gate_lcn"))
+
+        cargo_bits: List[str] = []
+        if cargo_ready:
+            cargo_bits.append(f"cargo ready {cargo_ready}")
+        if cargo_received:
+            cargo_bits.append(f"cargo received {cargo_received}")
+        if in_dc:
+            cargo_bits.append(f"in-dc {in_dc}")
+        if empty_dispatch and empty_dispatch_lcn:
+            cargo_bits.append(f"empty dispatch {empty_dispatch} @ {empty_dispatch_lcn}")
+        elif empty_dispatch:
+            cargo_bits.append(f"empty dispatch {empty_dispatch}")
+        elif empty_dispatch_lcn:
+            cargo_bits.append(f"empty dispatch location {empty_dispatch_lcn}")
+        if in_gate and in_gate_lcn:
+            cargo_bits.append(f"in-gate {in_gate} @ {in_gate_lcn}")
+        elif in_gate:
+            cargo_bits.append(f"in-gate {in_gate}")
+        elif in_gate_lcn:
+            cargo_bits.append(f"in-gate location {in_gate_lcn}")
+
+        if cargo_bits:
+            cargo_state = "COMPLETED" if len(cargo_bits) >= 3 else "PARTIAL"
+            leg_msgs.append(
+                f"Cargo Processing [{cargo_state}]: " + "; ".join(cargo_bits)
+            )
+        else:
+            leg_msgs.append(
+                "Cargo Processing [PLANNED]: no cargo prep/dispatch/in-gate events recorded yet."
+            )
 
         # Leg 1
         if atd_lp is not None:
@@ -1088,7 +1194,8 @@ class DataTransformer:
             )
 
         # Leg 3
-        dp_arrived = ata_dp is not None and ata_dp.date() <= today
+        dp_event_dt = ata_dp or vehicle_arrival or carrier_vehicle_unload or out_dp
+        dp_arrived = dp_event_dt is not None and dp_event_dt.date() <= today
         if dp_arrived:
             leg3_state = "COMPLETED"
             if delayed_dp == "delay" and dp_days is not None and dp_days > 0:
@@ -1099,15 +1206,16 @@ class DataTransformer:
                 delay_txt = "on time vs ETA DP."
             else:
                 delay_txt = "arrival vs ETA DP not clearly classified."
-            leg3_desc = f"arrived {dp} on {ata_dp.date().isoformat()} ({delay_txt})"
+            leg3_desc = f"DP-end event observed at {dp} on {dp_event_dt.date().isoformat()} ({delay_txt})"
         else:
-            if eta_dp is not None:
-                if eta_dp.date() < today:
+            eta_ref = eta_dp or best_eta_dp
+            if eta_ref is not None:
+                if eta_ref.date() < today:
                     leg3_state = "OVERDUE"
-                    leg3_desc = f"ETA DP {eta_dp.date().isoformat()} passed; actual arrival not recorded."
+                    leg3_desc = f"ETA DP {eta_ref.date().isoformat()} passed; DP-end arrival event not recorded."
                 else:
                     leg3_state = "IN_PROGRESS"
-                    leg3_desc = f"in ocean transit towards {dp} (ETA {eta_dp.date().isoformat()})."
+                    leg3_desc = f"in ocean transit towards {dp} (ETA {eta_ref.date().isoformat()})."
             else:
                 leg3_state = "UNKNOWN"
                 leg3_desc = "no ETA/ATA DP recorded."

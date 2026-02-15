@@ -16,7 +16,7 @@ This file controls workflow order, runtime logging, and failure behavior.
 - Imports standard libs (`logging`, `os`, `sys`, `time`, `datetime`, `Path`).
 - Imports dotenv helpers (`find_dotenv`, `load_dotenv`).
 - Imports pipeline components:
-  - `ENV_VARS`, `MAX_FILE_SIZE_BYTES` from `config.py`
+  - `ENV_VARS` from `config.py`
   - `DataIngestor`
   - `DataTransformer`
   - `JsonlWriter`, `JsonlWriterConfig`
@@ -82,6 +82,6 @@ This file controls workflow order, runtime logging, and failure behavior.
 - Downstream: Uploaded JSONL blobs in target container.
 
 ## Current Known Caveats
-1. `MAX_FILE_SIZE_BYTES` is imported but not enforced in `pipeline.py`.
-2. Grouping by `source_group` can skip rows where `source_group` is null.
+1. Grouping by `source_group` can skip rows where `source_group` is null.
+2. `writer.write(...)` can shard into multiple files under size cap, but pipeline's local `generated_files` list appends one return path per group (it can under-report shard count in that one log line).
 3. Backup naming uses only date (not timestamp), so multiple runs in one day can overwrite backup file name.

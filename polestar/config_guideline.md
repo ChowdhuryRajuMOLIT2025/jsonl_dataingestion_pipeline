@@ -48,7 +48,10 @@ It does not execute pipeline logic by itself. It only publishes constants that o
 ## How Other Files Use This
 - `src/pipeline.py`
   - reads `ENV_VARS` to validate required configuration.
-  - imports `MAX_FILE_SIZE_BYTES` (should be enforced in pipeline/writer logic).
+  - imports config contracts for orchestration.
+
+- `src/writer.py`
+  - enforces `MAX_FILE_SIZE_BYTES` via `JsonlWriterConfig.max_file_size_bytes` (default hard cap).
 
 - `src/transformer.py`
   - uses `COLUMN_MAPPING` for schema normalization and validation.
@@ -60,7 +63,7 @@ It does not execute pipeline logic by itself. It only publishes constants that o
 2. Add new source columns only with clear downstream usage.
 3. If canonical names change, update transformer and downstream index mapping together.
 4. Keep date fields consistently suffixed with `_date` when possible.
-5. Enforce `MAX_FILE_SIZE_BYTES` in runtime code (writer/pipeline), not only config.
+5. Keep `MAX_FILE_SIZE_BYTES` enforced in runtime writer logic; if changed, review downstream index/upload constraints.
 6. Validate no duplicate semantic targets unless intentionally aliased.
 
 ## Current Known Caveat

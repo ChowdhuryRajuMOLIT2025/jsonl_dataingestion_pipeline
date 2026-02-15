@@ -1,89 +1,75 @@
 # writer.py Guideline
 
 ## Objective
-`src/writer.py` converts transformed shipment rows into JSONL documents and uploads generated files to Azure Blob Storage.
+`src/writer.py` converts transformed rows into JSONL documents and uploads generated files to Azure Blob Storage.
 
 Core responsibilities:
-- normalize each document into a stable JSON schema,
-- write valid UTF-8 JSONL files,
-- manage output naming with month-tag and auto-increment counter,
-- upload generated files to a target Azure container.
+- normalize each input document into one stable schema,
+- enforce strict file-size sharding (12MB cap by default),
+- write UTF-8 JSONL safely,
+- upload produced files.
 
 ## Step-by-Step Execution
-1. Module import phase:
-- Imports `json`, `logging`, `re`, dataclass utilities, datetime/path/typing.
-- Imports `BlobServiceClient` from Azure SDK.
-- Initializes module logger `shipment_ingestion`.
+1. Module setup:
+- Imports JSON/logging/path utilities and Azure Blob SDK.
+- Imports `MAX_FILE_SIZE_BYTES` from config.
+- Initializes logger `shipment_ingestion`.
 
-2. Helper functions:
-- `_mmmyy_from_dt(dt)`:
-  - returns lower-case month tag (`jan26`, `feb26`, ...).
-- `_ensure_dict_metadata(m)`:
-  - guarantees metadata is a dict; wraps non-dict metadata as `{\"_raw_metadata\": ...}`.
-- `_json_default(o)`:
-  - serializes non-JSON-native objects (for example pandas timestamps) using `isoformat` fallback.
-- `_next_counter(output_dir, mmmyy)`:
-  - scans existing files matching `shipment_<mmmyy>_<n>.jsonl`,
-  - returns next counter value.
-- `_coerce_consignee_codes(val)`:
-  - normalizes consignee codes into `list[str]`.
+2. Helper utilities:
+- `_mmmyy_from_dt(dt)`: default lower-case month tag.
+- `_safe_tag(tag)`: sanitizes tag for filenames.
+- `_next_counter(output_dir, tag)`: resolves next numeric suffix.
+- `_coerce_consignee_codes(val)`: normalizes to `list[str]`.
+- `_ensure_dict_metadata(m)`: guarantees metadata dict.
+- `_sanitize_for_json(val)`: recursively converts NaN/NaT/pd.NA to `None`, datetime-like to ISO text.
+- `_safe_text_or_empty(val)`: prevents `"nan"`-like text leakage into output fields.
 
-3. Writer configuration:
-- `JsonlWriterConfig` dataclass:
-  - `output_dir` (default `output`)
-  - `strict` validation toggle (default `False`)
+3. Writer config:
+- `JsonlWriterConfig`:
+  - `output_dir`
+  - `strict`
+  - `max_file_size_bytes` (defaults to config 12MB hard limit)
 
-4. Writer initialization:
-- `JsonlWriter.__init__` stores config/logger and initializes `generated_files`.
+4. `JsonlWriter.write(docs, mmmyy)`:
+- Resolves output directory and filename tag.
+- Enforces positive `max_file_size_bytes`.
+- Iterates normalized docs and writes line-by-line.
+- Rolls to next file when current file would exceed size cap.
+- Raises hard error if a single record alone exceeds max size.
+- Tracks all generated shard paths in `generated_files`.
+- Returns the first file path created for that call.
 
-5. JSONL writing (`write`):
-- Ensures output directory exists.
-- Resolves target filename:
-  - `shipment_<mmmyy>_<counter>.jsonl`
-- Materializes docs iterable to list for count logging.
-- For each doc:
-  - calls `_normalize_doc`,
-  - writes one JSON object per line.
-- Appends output path to `generated_files`.
-- Returns written path.
-
-6. Document normalization (`_normalize_doc`):
+5. Document normalization (`_normalize_doc`):
 - Rejects non-dict input.
-- Case A: if doc already has `id/content/metadata` style keys:
-  - resolves `document_id` fallback chain,
-  - resolves content fallback (`combined_content` or `milestones`),
-  - enforces dict metadata,
-  - stores `consignee_codes` in metadata as list.
-- Case B: raw row dict:
-  - builds `document_id` from row identity fallback chain,
-  - takes content from `combined_content` or `milestones`,
-  - copies row into metadata with selected field cleanup,
-  - includes top-level `consignee_code` stringified field.
-- Validates output via `_validate`.
+- Supports two inputs:
+  - Case A: already `id/content/metadata` style.
+  - Case B: raw transformed row.
+- Both cases now emit same schema:
+  - `document_id` (string)
+  - `content` (string)
+  - `consignee_code` (`list[str]`)
+  - `metadata` (`dict`)
+- `metadata["consignee_codes"]` is normalized to `list[str]`.
 
-7. Validation (`_validate`):
+6. Validation (`_validate`):
 - Requires keys: `document_id`, `content`, `metadata`.
-- Requires metadata type to be dict.
-- In strict mode, rejects empty `document_id` or empty `content`.
+- Ensures metadata is dict.
+- In `strict=True`, enforces non-empty `document_id` and `content`.
 
-8. Upload generated files (`upload_files`):
-- Connects with `BlobServiceClient` using connection string.
-- Ensures target container exists (creates if not).
-- Uploads each file in `generated_files` with overwrite enabled.
-- Logs per-file upload and final completion.
+7. Upload (`upload_files`):
+- Connects by connection string.
+- Creates target container if missing.
+- Uploads each generated file with overwrite enabled.
 
-9. Functional convenience API:
-- `write_jsonl(...)` instantiates writer and returns string path of written file.
+8. Convenience API (`write_jsonl`):
+- Creates writer instance and returns path string from `write(...)`.
 
 ## Runtime Relationship
-- Upstream input: transformed row dicts from `DataTransformer` output.
+- Upstream input: transformed row dicts from `DataTransformer`.
 - Downstream output:
-  - local JSONL files (output directory),
-  - uploaded JSONL blobs in Azure container.
+  - local shard files `shipment_<tag>_<n>.jsonl`
+  - uploaded blobs in target container.
 
 ## Current Known Caveats
-1. Output schema differs between normalization paths:
-  - Case A does not emit top-level `consignee_code`.
-  - Case B emits top-level `consignee_code` as stringified list.
-2. `strict=False` by default, so empty content/doc IDs can pass unless explicitly enabled.
-3. File size limits (for example 12 MB hard cap) are not enforced inside writer logic.
+1. `write(...)` returns only the first path from a potentially multi-file shard write; full list is in `writer.generated_files`.
+2. `strict=False` remains default, so empty content can still pass unless strict mode is enabled.

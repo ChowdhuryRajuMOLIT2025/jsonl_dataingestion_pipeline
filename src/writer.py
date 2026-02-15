@@ -6,21 +6,24 @@ Fixes implemented:
    - mmmyy like: jan26, feb26, mar26 ...
    - counter auto-increments based on existing files in the output directory.
 3) Robust JSONL writing with UTF-8, one JSON object per line.
-4) Safe defaults and light validation to prevent silent schema corruption.
+4) Hard max-size enforcement with automatic file roll-over (12MB by default).
+5) Consistent normalized output schema across both input paths.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import pandas as pd
 from azure.storage.blob import BlobServiceClient
+
+from .config import MAX_FILE_SIZE_BYTES
 
 logger = logging.getLogger("shipment_ingestion")
 
@@ -41,6 +44,60 @@ def _ensure_dict_metadata(m: Any) -> Dict[str, Any]:
         return m
     # Fallback: wrap non-dict metadata to avoid breaking downstream consumers
     return {"_raw_metadata": m}
+
+
+def _is_missing_scalar(val: Any) -> bool:
+    if val is None:
+        return True
+    try:
+        return bool(pd.isna(val))
+    except Exception:
+        return False
+
+
+def _sanitize_for_json(val: Any) -> Any:
+    """
+    Recursively sanitize values for strict JSON serialization:
+    - pd.NA/NaN/NaT -> None
+    - datetime-like -> ISO string
+    - set/tuple -> list
+    """
+    if isinstance(val, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [_sanitize_for_json(v) for v in val]
+    if isinstance(val, tuple):
+        return [_sanitize_for_json(v) for v in val]
+    if isinstance(val, set):
+        return [_sanitize_for_json(v) for v in val]
+
+    if _is_missing_scalar(val):
+        return None
+
+    try:
+        if hasattr(val, "isoformat"):
+            return val.isoformat()
+    except Exception:
+        pass
+
+    return val
+
+
+def _safe_text_or_empty(val: Any) -> str:
+    if _is_missing_scalar(val):
+        return ""
+    s = str(val).strip()
+    if s.lower() in {"nan", "none", "null", "<na>", "nat"}:
+        return ""
+    return s
+
+
+def _safe_tag(tag: Optional[str]) -> str:
+    raw = (tag or _mmmyy_from_dt(datetime.now())).strip().lower()
+    raw = re.sub(r"\s+", "_", raw)
+    raw = re.sub(r"[^a-z0-9_-]+", "_", raw)
+    raw = re.sub(r"_+", "_", raw).strip("_")
+    return raw or _mmmyy_from_dt(datetime.now())
 
 
 def _json_default(o: Any) -> Any:
@@ -110,6 +167,8 @@ class JsonlWriterConfig:
     output_dir: str = "output"
     # If you want strict enforcement of required keys, set True.
     strict: bool = False
+    # Hard file cap (12 MB by default from config).
+    max_file_size_bytes: int = MAX_FILE_SIZE_BYTES
 
 
 class JsonlWriter:
@@ -161,26 +220,93 @@ class JsonlWriter:
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        mmmyy_tag = (mmmyy or _mmmyy_from_dt(datetime.now())).lower()
+        mmmyy_tag = _safe_tag(mmmyy)
         counter = _next_counter(output_dir, mmmyy_tag)
-        out_path = output_dir / f"shipment_{mmmyy_tag}_{counter}.jsonl"
+        max_file_size = int(self.config.max_file_size_bytes)
+        if max_file_size <= 0:
+            raise ValueError("max_file_size_bytes must be > 0.")
 
         docs_list = list(docs)  # allows logging counts and single-pass iteration
-        self.logger.info("Writing %d docs to %s", len(docs_list), out_path)
+        self.logger.info(
+            "Writing %d docs with cap=%d bytes per file and tag=%s",
+            len(docs_list),
+            max_file_size,
+            mmmyy_tag,
+        )
 
-        written = 0
-        with out_path.open("w", encoding="utf-8") as f:
+        file_counter = counter
+        current_path: Optional[Path] = None
+        first_path: Optional[Path] = None
+        current_size = 0
+        current_lines = 0
+        total_lines = 0
+        files_written_this_call: List[Path] = []
+        f = None
+
+        def _open_new_file() -> None:
+            nonlocal current_path, first_path, current_size, current_lines, f
+            current_path = output_dir / f"shipment_{mmmyy_tag}_{file_counter}.jsonl"
+            if first_path is None:
+                first_path = current_path
+            current_size = 0
+            current_lines = 0
+            f = current_path.open("w", encoding="utf-8")
+
+        try:
             for idx, doc in enumerate(docs_list, start=1):
                 normalized = self._normalize_doc(doc, fallback_index=idx)
-                f.write(
+                line = (
                     json.dumps(normalized, ensure_ascii=False, default=_json_default)
+                    + "\n"
                 )
-                f.write("\n")
-                written += 1
+                line_bytes = len(line.encode("utf-8"))
 
-        self.logger.info("JSONL write complete. File=%s, lines=%d", out_path, written)
-        self.generated_files.append(out_path)
-        return out_path
+                if line_bytes > max_file_size:
+                    raise ValueError(
+                        f"Record {idx} is {line_bytes} bytes, exceeds max file size {max_file_size}."
+                    )
+
+                if f is None:
+                    _open_new_file()
+
+                if current_lines > 0 and (current_size + line_bytes) > max_file_size:
+                    f.close()
+                    if current_path is not None:
+                        files_written_this_call.append(current_path)
+                    self.logger.info(
+                        "Rolled file at %d bytes, %d line(s): %s",
+                        current_size,
+                        current_lines,
+                        current_path,
+                    )
+                    file_counter += 1
+                    _open_new_file()
+
+                f.write(line)
+                current_size += line_bytes
+                current_lines += 1
+                total_lines += 1
+
+            # Preserve historical behavior: write an empty file if docs list is empty.
+            if f is None:
+                _open_new_file()
+        finally:
+            if f is not None:
+                f.close()
+                if current_path is not None:
+                    files_written_this_call.append(current_path)
+
+        self.generated_files.extend(files_written_this_call)
+        self.logger.info(
+            "JSONL write complete. Files=%d, lines=%d, first=%s",
+            len(files_written_this_call),
+            total_lines,
+            first_path,
+        )
+
+        if first_path is None:
+            raise RuntimeError("Writer failed to create output path.")
+        return first_path
 
     def _normalize_doc(
         self, doc: Dict[str, Any], fallback_index: int
@@ -228,18 +354,18 @@ class JsonlWriter:
 
             # RLS consignee codes: prefer at top-level or inside metadata
             if "consignee_codes" in doc:
-                metadata["consignee_codes"] = _coerce_consignee_codes(
-                    doc.get("consignee_codes")
-                )
+                consignee_codes = _coerce_consignee_codes(doc.get("consignee_codes"))
             else:
-                metadata["consignee_codes"] = _coerce_consignee_codes(
+                consignee_codes = _coerce_consignee_codes(
                     metadata.get("consignee_codes")
                 )
+            metadata["consignee_codes"] = consignee_codes
 
             out = {
-                "document_id": str(doc_id),
-                "content": str(content),
-                "metadata": metadata,
+                "document_id": _safe_text_or_empty(doc_id) or f"doc_{fallback_index}",
+                "content": _safe_text_or_empty(content),
+                "consignee_code": consignee_codes,
+                "metadata": _sanitize_for_json(metadata),
             }
 
             self._validate(out)
@@ -255,9 +381,8 @@ class JsonlWriter:
         content = doc.get("combined_content") or doc.get("milestones") or ""
 
         metadata = dict(doc)
-        metadata["consignee_codes"] = _coerce_consignee_codes(
-            doc.get("consignee_codes")
-        )
+        consignee_codes = _coerce_consignee_codes(doc.get("consignee_codes"))
+        metadata["consignee_codes"] = consignee_codes
         if "carr_eqp_uid" in metadata:
             del metadata["carr_eqp_uid"]
         if "consignee_raw" in metadata:
@@ -266,10 +391,10 @@ class JsonlWriter:
             del metadata["combined_content"]
 
         out = {
-            "document_id": str(doc_id),
-            "content": str(content),
-            "metadata": metadata,
-            "consignee_code": str(doc.get("consignee_codes", [])),
+            "document_id": _safe_text_or_empty(doc_id) or f"doc_{fallback_index}",
+            "content": _safe_text_or_empty(content),
+            "consignee_code": consignee_codes,
+            "metadata": _sanitize_for_json(metadata),
         }
         self._validate(out)
         return out
