@@ -142,7 +142,7 @@ MULTI_VALUED_ID_COLS = ["po_numbers", "booking_numbers", "fcr_numbers", "obl_nos
 BOOLEAN_COLUMNS = ["hot_container_flag"]
 
 # ID Columns that must be strings
-ID_COLUMNS = ["job_no", "carr_eqp_uid", "container_number"]
+ID_COLUMNS = ["job_no", "carr_eqp_uid", "container_number", "final_voyage_code"]
 
 # Columns to dropped explicitly during cleanup (if not already filtered by projection)
 DROP_COLUMNS_AFTER_LOAD = [
@@ -151,7 +151,6 @@ DROP_COLUMNS_AFTER_LOAD = [
     "final_carrier_code",
     "final_carrier_scac_code",
     "final_vessel_code",
-    "final_voyage_code",
     "true_carrier_code",
     "true_carrier_scac_code",
     "late_booking_status",
@@ -159,4 +158,135 @@ DROP_COLUMNS_AFTER_LOAD = [
     "current_arrival_status",
     "late_arrival_status",
     "late_container_return_status",
+]
+
+# -------------------------------------------------------------------------
+# Column Categories (WIP: to be cleaned/refined)
+# -------------------------------------------------------------------------
+SHIPMENT_COLS = [
+    "job_type",
+    "transport_mode",
+    "true_carrier_scac_name",
+    "destination_service",
+    "container_type",
+    "hot_container_flag",
+    "seal_number",
+]
+
+SHIPMENT_DETAILS_COLS = [
+    "po_numbers",
+    "booking_numbers",
+    "booking_approval_status",
+    "service_contract_number",
+    "fcr_numbers",
+    "obl_nos",
+    "mcs_hbl",
+    "856_filing_status",
+    "get_isf_submission_date",
+]
+
+SHIPMENT_PARTY_COLS = [
+    "consignee_raw",
+    "consignee_name",
+    "consignee_codes",
+    "supplier_vendor_name",
+    "manufacturer_name",
+    "ship_to_party_name",
+]
+
+SHIPMENT_DIAMENSION_COLS = [
+    "cargo_weight_kg",
+    "cargo_measure_cubic_meter",
+    "cargo_count",
+    "cargo_um",
+    "cargo_detail_count",
+    "detail_cargo_um",
+]
+
+SENDER_END_COLS = [
+    "place_of_receipt",
+    "cargo_ready_date",
+    "cargo_receiveds_date",
+    "in-dc_date",
+    "empty_container_dispatch_date",
+    "empty_container_dispatch_lcn",
+    "in_gate_date",
+    "in_gate_lcn",
+    "carrier_vehicle_load_date",
+    "carrier_vehicle_load_lcn",
+    "vehicle_departure_date",
+    "vehicle_departure_lcn",
+    "load_port",
+    "first_vessel_name",
+    "etd_lp_date",
+    "atd_lp_date",
+]
+
+TRANSHIPMENT_END_COLS = [
+    "final_load_port",
+    "final_vessel_name",
+    "final_carrier_name",
+    "etd_flp_date",
+    "ata_flp_date",
+    "atd_flp_date",
+]
+
+DEST_END_COLS = [
+    "discharge_port",
+    "eta_dp_date",
+    "ata_dp_date",
+    "best_eta_dp_date",
+    "vehicle_arrival_date",
+    "vehicle_arrival_lcn",
+    "carrier_vehicle_unload_date",
+    "carrier_vehicle_unload_lcn",
+    "out_gate_from_dp_date",
+    "out_gate_from_dp_lcn",
+]
+
+RAIL_COLS = [
+    "rail_load_dp_date",
+    "rail_load_dp_lcn",
+    "rail_departure_dp_date",
+    "rail_departure_dp_lcn",
+    "rail_arrival_destination_date",
+    "rail_arrival_destination_lcn",
+]
+
+CY_END_COLS = [
+    "last_cy_location",
+    "place_of_delivery",
+    "equipment_arrived_at_last_cy_date",
+    "equipment_arrived_at_last_cy_lcn",
+    "out_gate_at_last_cy_date",
+    "out_gate_at_last_cy_lcn",
+]
+
+DEL_END_COLS = [
+    "final_destination",
+    "eta_fd_date",
+    "best_eta_fd_date",
+    "delivery_to_consignee_date",
+    "delivery_to_consignee_lcn",
+    "empty_container_return_date",
+    "empty_container_return_lcn",
+]
+
+VIOLATION_COLS = [
+    "detention_free_days",
+    "demurrage_free_days",
+    "co2_tank_on_wheel",
+    "co2_well_to_wheel",
+]
+
+SUPPORTING_COLS = [
+    "delayed_dp",
+    "dp_delayed_dur",
+    "delayed_fd",
+    "fd_delayed_dur",
+    "shipment_status",
+    "delay_reason_summary",
+    "workflow_gap_flags",
+    "source_group",
+    "source_month_tag",
 ]
