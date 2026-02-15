@@ -335,7 +335,6 @@ class DataTransformer:
             "etd_flp_date",
             "eta_flp_date",
             "ata_flp_date",
-            "ara_flp_date",
             "atd_flp_date",
         ]
         existing_cols = [c for c in flp_date_cols if c in out.columns]
@@ -592,11 +591,11 @@ class DataTransformer:
     # -------------------------------------------------------------------------
     @staticmethod
     def _derive_best_eta_dp_date(row: pd.Series) -> Optional[pd.Timestamp]:
-        ata_dp = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
+        # ata_dp = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
         derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
 
-        if isinstance(ata_dp, pd.Timestamp):
-            return ata_dp
+        # if isinstance(ata_dp, pd.Timestamp):
+            # return ata_dp
         if isinstance(derived, pd.Timestamp):
             return derived
         return None
@@ -621,30 +620,48 @@ class DataTransformer:
     @staticmethod
     def _derive_dp_delay(row: pd.Series) -> Tuple[str, float]:
         today = pd.Timestamp("today").normalize()
-
-        optimal = DataTransformer._to_date_or_none(row.get("best_eta_dp_date"))
+        best_eta = DataTransformer._to_date_or_none(row.get("best_eta_dp_date"))
         eta = DataTransformer._to_date_or_none(row.get("eta_dp_date"))
+        ata = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
 
-        if optimal is None:
-            if isinstance(eta, pd.Timestamp):
-                delay_days = int((today - eta).days)
-                if eta > today:
-                    delay_days = 0
-                    label = "on_time"
-                else:
-                    delay_days = max(0, delay_days)
-                    label = "delay" if delay_days > 0 else "on_time"
+        # If actual arrival is known, compare against best ETA (fallback ETA DP).
+        if isinstance(ata, pd.Timestamp):
+            baseline = (
+                best_eta
+                if isinstance(best_eta, pd.Timestamp)
+                else (eta if isinstance(eta, pd.Timestamp) else None)
+            )
+            if isinstance(baseline, pd.Timestamp):
+                delay_days = int((ata - baseline).days)
             else:
                 delay_days = 0
-                label = "on_time"
-        else:
-            delay_days = int((optimal - eta).days)
+
             if delay_days > 0:
                 label = "delay"
             elif delay_days < 0:
                 label = "early"
             else:
                 label = "on_time"
+            return label, delay_days
+
+        # No actual arrival yet: evaluate against best planned date.
+        planned = (
+            best_eta
+            if isinstance(best_eta, pd.Timestamp)
+            else (eta if isinstance(eta, pd.Timestamp) else None)
+        )
+        if isinstance(planned, pd.Timestamp):
+            delay_days = int((today - planned).days)
+            if planned > today:
+                delay_days = 0
+                label = "on_time"
+            else:
+                delay_days = max(0, delay_days)
+                label = "delay" if delay_days > 0 else "on_time"
+        else:
+            delay_days = 0
+            label = "on_time"
+
         return label, delay_days
 
     @staticmethod
