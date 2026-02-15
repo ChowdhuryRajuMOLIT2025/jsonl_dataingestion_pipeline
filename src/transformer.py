@@ -40,7 +40,7 @@ class DataTransformer:
     2. Type normalization (strings, booleans, dates).
     3. Derivations:
        - consignee_name / consignee_codes
-       - optimal_ata_dp_date / optimal_eta_fd_date
+       - best_eta_dp_date / best_eta_fd_date
        - delay flags & durations (DP / FD)
        - shipment_status
        - critical_dates_summary
@@ -82,7 +82,7 @@ class DataTransformer:
         self.logger.info("Consignee name/code derived. Shape=%s", df.shape)
 
         df = self._derive_optimal_dates(df)
-        self.logger.info("Optimal DP / FD dates derived. Shape=%s", df.shape)
+        self.logger.info("Best DP / FD dates derived. Shape=%s", df.shape)
 
         df = self._derive_delay_flags(df)
         self.logger.info("Delay flags & durations (DP/FD) derived. Shape=%s", df.shape)
@@ -368,7 +368,9 @@ class DataTransformer:
 
         out[obj_cols] = out[obj_cols].apply(lambda s: s.astype("string").str.strip())
         out[obj_cols] = out[obj_cols].replace("()", "", regex=False)
-        out[obj_cols] = out[obj_cols].replace({"nan": pd.NA, "NaN": pd.NA})
+        out[obj_cols] = out[obj_cols].replace(
+            r"(?i)^\s*(nan|null|none|nat|n/a|<na>)\s*$", pd.NA, regex=True
+        )
         return out
 
     @staticmethod
@@ -488,7 +490,15 @@ class DataTransformer:
         except Exception:
             pass
         s = str(v).strip()
+        if DataTransformer._is_placeholder_token(s):
+            return default
         return s if s else default
+
+    @staticmethod
+    def _is_placeholder_token(v: Any) -> bool:
+        if not isinstance(v, str):
+            return False
+        return v.strip().upper() in {"NAN", "NULL", "NONE", "N/A", "NAT", "<NA>"}
 
     @staticmethod
     def _to_date_or_none(v: Any) -> Optional[pd.Timestamp]:
@@ -578,23 +588,21 @@ class DataTransformer:
         return out
 
     # -------------------------------------------------------------------------
-    # Optimal dates (DP and FD)
+    # Best dates (DP and FD)
     # -------------------------------------------------------------------------
     @staticmethod
-    def _derive_optimal_ata_dp_date(row: pd.Series) -> Optional[pd.Timestamp]:
-        today = pd.Timestamp("today").normalize()
+    def _derive_best_eta_dp_date(row: pd.Series) -> Optional[pd.Timestamp]:
         ata_dp = DataTransformer._to_date_or_none(row.get("ata_dp_date"))
-        # derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
+        derived = DataTransformer._to_date_or_none(row.get("derived_ata_dp_date"))
 
         if isinstance(ata_dp, pd.Timestamp):
             return ata_dp
-        if isinstance(derived, pd.Timestamp) and derived <= today:
-        # if isinstance(derived, pd.Timestamp):
+        if isinstance(derived, pd.Timestamp):
             return derived
         return None
 
     @staticmethod
-    def _derive_optimal_eta_fd_date(row: pd.Series) -> Optional[pd.Timestamp]:
+    def _derive_best_eta_fd_date(row: pd.Series) -> Optional[pd.Timestamp]:
         for c in ["predictive_eta_fd_date", "revised_eta_fd_date", "eta_fd_date"]:
             val = DataTransformer._to_date_or_none(row.get(c))
             if isinstance(val, pd.Timestamp):
@@ -603,8 +611,8 @@ class DataTransformer:
 
     def _derive_optimal_dates(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
-        out["optimal_ata_dp_date"] = out.apply(self._derive_optimal_ata_dp_date, axis=1)
-        out["optimal_eta_fd_date"] = out.apply(self._derive_optimal_eta_fd_date, axis=1)
+        out["best_eta_dp_date"] = out.apply(self._derive_best_eta_dp_date, axis=1)
+        out["best_eta_fd_date"] = out.apply(self._derive_best_eta_fd_date, axis=1)
         return out
 
     # -------------------------------------------------------------------------
@@ -614,7 +622,7 @@ class DataTransformer:
     def _derive_dp_delay(row: pd.Series) -> Tuple[str, float]:
         today = pd.Timestamp("today").normalize()
 
-        optimal = DataTransformer._to_date_or_none(row.get("optimal_ata_dp_date"))
+        optimal = DataTransformer._to_date_or_none(row.get("best_eta_dp_date"))
         eta = DataTransformer._to_date_or_none(row.get("eta_dp_date"))
 
         if optimal is None:
@@ -643,7 +651,7 @@ class DataTransformer:
     def _derive_fd_delay(row: pd.Series) -> Tuple[str, float]:
         today = pd.Timestamp("today").normalize()
 
-        optimal = DataTransformer._to_date_or_none(row.get("optimal_eta_fd_date"))
+        optimal = DataTransformer._to_date_or_none(row.get("best_eta_fd_date"))
         delivery = DataTransformer._to_date_or_none(
             row.get("delivery_to_consignee_date")
         )
@@ -715,9 +723,7 @@ class DataTransformer:
         last_cy_out = DataTransformer._to_date_or_none(
             row.get("out_gate_at_last_cy_date")
         )
-        optimal_ata_dp = DataTransformer._to_date_or_none(
-            row.get("optimal_ata_dp_date")
-        )
+        best_eta_dp = DataTransformer._to_date_or_none(row.get("best_eta_dp_date"))
         atd_flp = DataTransformer._to_date_or_none(row.get("atd_flp_date"))
         ata_flp = DataTransformer._to_date_or_none(row.get("ata_flp_date"))
         atd_lp = DataTransformer._to_date_or_none(row.get("atd_lp_date"))
@@ -733,12 +739,12 @@ class DataTransformer:
         if isinstance(last_cy_arr, pd.Timestamp):
             return "AT_LAST_CY"
 
-        if isinstance(optimal_ata_dp, pd.Timestamp) and optimal_ata_dp <= today:
+        if isinstance(best_eta_dp, pd.Timestamp) and best_eta_dp <= today:
             return "AT_DP"
 
         # Ocean transit if departed TS (or load->ocean) but not yet at DP
         if isinstance(atd_flp, pd.Timestamp) or isinstance(atd_lp, pd.Timestamp) and (
-            not isinstance(optimal_ata_dp, pd.Timestamp) or optimal_ata_dp > today
+            not isinstance(best_eta_dp, pd.Timestamp) or best_eta_dp > today
         ):
             return "IN_OCEAN_TRANSIT"
 
@@ -787,7 +793,7 @@ class DataTransformer:
             atd_lp = self._to_date_or_none(row.get("atd_lp_date"))
             ata_flp = self._to_date_or_none(row.get("ata_flp_date"))
             atd_flp = self._to_date_or_none(row.get("atd_flp_date"))
-            optimal_ata_dp = self._to_date_or_none(row.get("optimal_ata_dp_date"))
+            best_eta_dp = self._to_date_or_none(row.get("best_eta_dp_date"))
             out_gate_from_dp = self._to_date_or_none(row.get("out_gate_from_dp_date"))
             equip_arr_last_cy = self._to_date_or_none(
                 row.get("equipment_arrived_at_last_cy_date")
@@ -822,9 +828,9 @@ class DataTransformer:
 
             # Leg 3: Ocean to DP
             leg3_desc = f"{flp or lp or 'LOAD'} → {dp or 'DP'}"
-            if optimal_ata_dp:
+            if best_eta_dp:
                 parts.append(
-                    f"Leg 3 (Ocean to DP): {leg3_desc} | ATA_DP {self._fmt_date_val(optimal_ata_dp)}"
+                    f"Leg 3 (Ocean to DP): {leg3_desc} | BEST_ETA_DP {self._fmt_date_val(best_eta_dp)}"
                 )
 
             # Leg 4: DP -> Last CY
@@ -979,13 +985,13 @@ class DataTransformer:
         atd_flp = d(row.get("atd_flp_date"))
 
         eta_dp = d(row.get("eta_dp_date"))
-        ata_dp = d(row.get("optimal_ata_dp_date"))
+        ata_dp = d(row.get("best_eta_dp_date"))
 
         out_dp = d(row.get("out_gate_from_dp_date"))
         equip_arr_cy = d(row.get("equipment_arrived_at_last_cy_date"))
         out_cy = d(row.get("out_gate_at_last_cy_date"))
 
-        eta_fd = d(row.get("optimal_eta_fd_date"))
+        eta_fd = d(row.get("best_eta_fd_date"))
         delivery = d(row.get("delivery_to_consignee_date"))
         empty_rt = d(row.get("empty_container_return_date"))
 
@@ -1335,7 +1341,7 @@ class DataTransformer:
                     cleaned.append(v.strftime("%d-%b-%y"))
                 else:
                     s = str(v).strip()
-                    if s:
+                    if s and not DataTransformer._is_placeholder_token(s):
                         cleaned.append(s)
             return ", ".join(cleaned) if cleaned else None
         try:
@@ -1351,6 +1357,8 @@ class DataTransformer:
                 pass
 
         s = str(val).strip()
+        if DataTransformer._is_placeholder_token(s):
+            return None
         return s or None
 
     @staticmethod
@@ -1380,7 +1388,15 @@ class DataTransformer:
             "EMPTY_CONTAINER_RETURNED",
         }:
             display_status = "EMPTY CONTAINER RETURNED"
-        hot_container_flag = row.get("hot_container_flag")  # boolean
+        hot_container_flag_raw = row.get("hot_container_flag")
+        hot_container_flag_bool: Optional[bool] = None
+        try:
+            if pd.isna(hot_container_flag_raw):
+                hot_container_flag_bool = None
+            else:
+                hot_container_flag_bool = bool(hot_container_flag_raw)
+        except Exception:
+            hot_container_flag_bool = None
         seal_number = cls._fmt_value_for_text(row.get("seal_number"))
 
         load_port = cls._fmt_value_for_text(row.get("load_port"))
@@ -1392,7 +1408,7 @@ class DataTransformer:
 
         header_fragments: List[str] = []
 
-        if hot_container_flag:
+        if hot_container_flag_bool is True:
             header_fragments.append("HOT CONTAINER")
 
         container_label = container_number
@@ -1442,8 +1458,8 @@ class DataTransformer:
         # Dates & delay snapshot
         etd_lp_date = cls._fmt_value_for_text(row.get("etd_lp_date"))
         eta_dp_date = cls._fmt_value_for_text(row.get("eta_dp_date"))
-        optimal_ata_dp_date = cls._fmt_value_for_text(row.get("optimal_ata_dp_date"))
-        optimal_eta_fd_date = cls._fmt_value_for_text(row.get("optimal_eta_fd_date"))
+        best_eta_dp_date = cls._fmt_value_for_text(row.get("best_eta_dp_date"))
+        best_eta_fd_date = cls._fmt_value_for_text(row.get("best_eta_fd_date"))
 
         delayed_dp = cls._fmt_value_for_text(row.get("delayed_dp"))
         dp_delayed_dur = cls._fmt_value_for_text(row.get("dp_delayed_dur"))
@@ -1455,10 +1471,10 @@ class DataTransformer:
             key_dates.append(f"ETD LP: {etd_lp_date}")
         if eta_dp_date:
             key_dates.append(f"ETA DP: {eta_dp_date}")
-        if optimal_ata_dp_date:
-            key_dates.append(f"ATA DP (optimal): {optimal_ata_dp_date}")
-        if optimal_eta_fd_date:
-            key_dates.append(f"ETA FD (optimal): {optimal_eta_fd_date}")
+        if best_eta_dp_date:
+            key_dates.append(f"ETA DP (best): {best_eta_dp_date}")
+        if best_eta_fd_date:
+            key_dates.append(f"ETA FD (best): {best_eta_fd_date}")
 
         delay_bits: List[str] = []
         if delayed_dp and dp_delayed_dur is not None:
@@ -1773,8 +1789,8 @@ class DataTransformer:
             party_line.append(f"Job type: {job_type}")
         if transport_mode:
             party_line.append(f"Transport mode: {transport_mode}")
-        if hot_container_flag is not None:
-            party_line.append(f"Hot container flag: {hot_container_flag}")
+        if hot_container_flag_bool is not None:
+            party_line.append(f"Hot container flag: {hot_container_flag_bool}")
         if booking_approval_status:
             party_line.append(f"Booking approval status: {booking_approval_status}")
         if party_line:

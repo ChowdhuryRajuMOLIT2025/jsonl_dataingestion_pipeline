@@ -78,7 +78,7 @@ Primary outcomes:
 - `_derive_consignee_fields`:
   - extracts `consignee_name` and `consignee_codes` from `consignee_raw`-like field.
 - `_derive_optimal_dates`:
-  - calculates `optimal_ata_dp_date` and `optimal_eta_fd_date`.
+  - calculates `best_eta_dp_date` and `best_eta_fd_date`.
 - `_derive_delay_flags`:
   - generates `delayed_dp`, `dp_delayed_dur`, `delayed_fd`, `fd_delayed_dur`.
 - `_derive_shipment_status`:
@@ -113,6 +113,7 @@ Primary outcomes:
   - `carr_eqp_uid` (or fallback IDs),
   - `combined_content`,
   - `consignee_codes`,
+  - `best_eta_dp_date` / `best_eta_fd_date`,
   - partition tags (`source_group`, `source_month_tag`),
   - derived status/delay fields.
 
@@ -122,7 +123,7 @@ Primary outcomes:
 - Pipeline orchestration: `pipeline.py` calls `transformer.run_pipeline(df)` as step 2.
 
 ## Current Known Caveats (Important)
-1. `_derive_optimal_ata_dp_date` references `derived` while assignment is commented, which can raise `NameError` on rows without `ata_dp_date`.
+1. `best_eta_dp_date` is currently derived from `ata_dp_date` first, then `derived_ata_dp_date` (without today-gating). Ensure this matches business expectations for future-dated derived values.
 2. `_build_combined_content` uses truth check `if hot_container_flag:` which can fail for nullable boolean (`pd.NA`) with ambiguous truth-value error.
 3. Date parsing uses `dayfirst=True`; ISO-style dates still parse but can trigger warnings and ambiguity for mixed formats.
 4. Header validation enforces position strictly; alias-heavy or duplicate-target mappings in config can cause avoidable schema failures if not carefully managed.
