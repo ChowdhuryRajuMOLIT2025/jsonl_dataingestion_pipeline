@@ -3,6 +3,7 @@ logs/
 downloads/
 output_jsonl/
 output_parquet/
+output_jsonl_local_e2e/
 *.parquet
 .ipynb_checkpoints/
 shipment_dec25.jsonl
