@@ -793,7 +793,7 @@ class DataTransformer:
         if (
             not isinstance(atd_lp, pd.Timestamp)
             and isinstance(etd_lp, pd.Timestamp)
-            and etd_lp >= today
+            # and etd_lp >= today
         ):
             return "AT_ORIGIN"
 
