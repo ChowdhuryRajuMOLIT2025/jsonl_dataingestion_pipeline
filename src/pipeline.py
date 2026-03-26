@@ -45,6 +45,19 @@ def setup_logging():
 logger = setup_logging()
 
 
+def _find_latest_local_csv(download_dir: Path) -> Path | None:
+    if not download_dir.exists():
+        return None
+
+    csv_files = [
+        p for p in download_dir.glob("*.csv") if p.is_file() and p.stat().st_size > 0
+    ]
+    if not csv_files:
+        return None
+
+    return max(csv_files, key=lambda p: p.stat().st_mtime)
+
+
 class ShipmentDataPipeline:
     def __init__(self):
         self.config = {}
@@ -74,25 +87,32 @@ class ShipmentDataPipeline:
 
             # 1. Ingestion
             t0 = time.time()
-            # Using 'WNLD' container for download as per original script logic
-            ingestor = DataIngestor(
-                conn_str=self.config["AZURE_STORAGE_CONN_STR"],
-                container_name=self.config["AZURE_STORAGE_CONTAINER_WNLD"],
-            )
+            local_csv_path = _find_latest_local_csv(Path("downloads"))
+            if local_csv_path:
+                logger.info(
+                    "Found local CSV in downloads/. Skipping Azure blob download: %s",
+                    local_csv_path,
+                )
+            else:
+                # Using 'WNLD' container for download as per original script logic
+                ingestor = DataIngestor(
+                    conn_str=self.config["AZURE_STORAGE_CONN_STR"],
+                    container_name=self.config["AZURE_STORAGE_CONTAINER_WNLD"],
+                )
 
-            # Find latest
-            try:
-                latest_csv, _ = ingestor.find_latest_csv_blob()
-                local_csv_path = ingestor.download_blob(latest_csv)
-            except FileNotFoundError:
-                logger.error("No CSV found to process. Terminating pipeline.")
-                return
-            except Exception as e:
-                logger.error(f"Ingestion failed: {e}")
-                raise
+                # Find latest
+                try:
+                    latest_csv, _ = ingestor.find_latest_csv_blob()
+                    local_csv_path = ingestor.download_blob(latest_csv)
+                except FileNotFoundError:
+                    logger.error("No CSV found to process. Terminating pipeline.")
+                    return
+                except Exception as e:
+                    logger.error(f"Ingestion failed: {e}")
+                    raise
 
             # Read into DataFrame
-            df = ingestor.read_csv(local_csv_path)
+            df = DataIngestor.read_csv(local_csv_path)
             t1 = time.time()
             logger.info(f"Step 1: Ingestion completed in {t1 - t0:.2f} seconds.")
 

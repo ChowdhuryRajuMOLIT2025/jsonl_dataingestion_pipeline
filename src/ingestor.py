@@ -64,12 +64,23 @@ class DataIngestor:
             logger.error("Error finding latest CSV blob.", exc_info=True)
             raise
 
-    def download_blob(self, blob_name: str) -> Path:
+    def download_blob(self, blob_name: str, *, overwrite: bool = False) -> Path:
         """
         Downloads a specific blob to the local download directory.
         """
         local_path = self.download_dir / Path(blob_name).name
         try:
+            if local_path.exists() and not overwrite:
+                if local_path.is_file() and local_path.stat().st_size > 0:
+                    logger.info(
+                        "Local file already exists. Skipping download: %s", local_path
+                    )
+                    return local_path
+                logger.warning(
+                    "Local path exists but is not a non-empty file. Re-downloading: %s",
+                    local_path,
+                )
+
             logger.info(f"Downloading blob '{blob_name}' to '{local_path}'...")
             blob_client = self.container_client.get_blob_client(blob_name)
             with open(local_path, "wb") as f:
@@ -81,7 +92,8 @@ class DataIngestor:
             logger.error(f"Failed to download blob '{blob_name}'.", exc_info=True)
             raise
 
-    def read_csv(self, csv_path: Path) -> pd.DataFrame:
+    @staticmethod
+    def read_csv(csv_path: Path) -> pd.DataFrame:
         """
         Reads CSV with strict string types to preserve IDs and formatting.
         """

@@ -41,10 +41,11 @@ This file controls workflow order, runtime logging, and failure behavior.
 - Calls `load_configuration`.
 
 6. Step 1: Ingestion
-- Creates `DataIngestor` using:
+- If a local (non-empty) CSV exists in `downloads/`, uses the most recently modified local CSV and skips Azure download.
+- Otherwise creates `DataIngestor` using:
   - `AZURE_STORAGE_CONN_STR`
   - `AZURE_STORAGE_CONTAINER_WNLD`
-- Finds latest CSV blob and downloads it.
+- Finds latest CSV blob and downloads it (download is also cached if the exact filename already exists locally).
 - Reads CSV into DataFrame.
 - Logs elapsed time for ingestion.
 

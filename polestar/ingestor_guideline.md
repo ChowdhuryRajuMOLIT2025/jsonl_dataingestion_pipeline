@@ -29,8 +29,9 @@ This file does not transform or write JSONL. It only acquires and reads source d
 - Raises `FileNotFoundError` if no CSV is found.
 - Logs scan and selected file details.
 
-4. `download_blob(blob_name) -> Path`:
+4. `download_blob(blob_name, overwrite=False) -> Path`:
 - Computes local path as `downloads/<blob_filename_only>`.
+- If the local file already exists and is non-empty, it skips the blob download (unless `overwrite=True`).
 - Creates blob client for `blob_name`.
 - Streams blob to local file in binary mode.
 - Returns local file path after successful download.
@@ -52,6 +53,8 @@ This file does not transform or write JSONL. It only acquires and reads source d
 3. Call `download_blob(latest_csv_name)`.
 4. Call `read_csv(local_csv_path)`.
 5. Pass DataFrame to transformer stage.
+
+Note: If a local CSV already exists in `downloads/`, the pipeline can skip Azure blob ingestion entirely and just read the local CSV.
 
 ## Operational Notes
 1. The ingestor currently selects latest file by `last_modified`, not by filename date.
