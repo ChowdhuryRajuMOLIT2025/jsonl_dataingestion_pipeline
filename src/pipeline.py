@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from .config import ENV_VARS
+from .config import ENV_VARS, PAR_DEL_COLS
 from .ingestor import DataIngestor
 from .transformer import DataTransformer
 from .writer import JsonlWriter, JsonlWriterConfig
@@ -126,7 +126,8 @@ class ShipmentDataPipeline:
             # 2.5 Parquet snapshot (full transformed dataset)
             parquet_dir = Path("output_parquet")
             parquet_dir.mkdir(parents=True, exist_ok=True)
-            parquet_path = parquet_dir / "master_ds.parquet"
+            parquet_path = parquet_dir / "init_master_ds.parquet"
+            final_parquet_path = parquet_dir / "master_ds.parquet"
             if parquet_path.exists():
                 backup_dir = parquet_dir / "backup"
                 backup_dir.mkdir(parents=True, exist_ok=True)
@@ -135,8 +136,14 @@ class ShipmentDataPipeline:
                 )
                 backup_path = backup_dir / backup_name
                 parquet_path.replace(backup_path)
-            processed_df.to_parquet(parquet_path, index=False)
-            logger.info("Parquet snapshot saved to %s", parquet_path)
+            # processed_df.to_parquet(parquet_path, index=False)
+            final_par_df = processed_df.copy()
+            par_del_cols = PAR_DEL_COLS
+            final_par_df.drop(columns=par_del_cols, inplace=True)
+            final_par_df.to_parquet(
+                final_parquet_path, index=False, compression="snappy"
+            )
+            logger.info("Parquet snapshot saved to %s", final_parquet_path)
 
             # 3. Writing
             logger.info("Starting Writing Step (JSONL Generation)...")
