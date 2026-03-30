@@ -57,7 +57,7 @@ class DataIngestor:
                     f"No .csv blobs found in container '{self.container_name}'"
                 )
 
-            logger.info(f"Found latest CSV: {latest_name} (Last Modified: {latest_lm})")
+            # logger.info(f"Found latest CSV: {latest_name} (Last Modified: {latest_lm})")
             return latest_name, latest_lm
 
         except Exception as e:
@@ -72,9 +72,9 @@ class DataIngestor:
         try:
             if local_path.exists() and not overwrite:
                 if local_path.is_file() and local_path.stat().st_size > 0:
-                    logger.info(
-                        "Local file already exists. Skipping download: %s", local_path
-                    )
+                    # logger.info(
+                    #     "Local file already exists. Skipping download: %s", local_path
+                    # )
                     return local_path
                 logger.warning(
                     "Local path exists but is not a non-empty file. Re-downloading: %s",

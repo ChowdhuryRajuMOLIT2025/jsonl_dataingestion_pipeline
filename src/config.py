@@ -127,7 +127,7 @@ COLUMN_MAPPING: Dict[str, str] = {
     "Empty Container Dispatch Lcn": "empty_container_dispatch_lcn",
 }
 
-# Date columns to enforce strict 'YYYY-MM-DD' format
+# Date columns to enforce strict "YYYY-MM-DD" format
 DATE_COLUMNS = [
     v for k, v in COLUMN_MAPPING.items() if v.endswith("_date") or v in {"in-dc_date"}
 ]
@@ -289,4 +289,24 @@ SUPPORTING_COLS = [
     "workflow_gap_flags",
     "source_group",
     "source_month_tag",
+]
+
+
+PAR_DEL_COLS = [
+    "consignee_raw",
+    "revised_eta_date",
+    "predictive_eta_date",
+    "derived_ata_dp_date",
+    "revised_eta_fd_date",
+    "predictive_eta_fd_date",
+    "critical_dates_summary",
+    "delay_reason_summary",
+    "workflow_gap_flags",
+    "milestones",
+    "vessel_summary",
+    "carrier_summary",
+    "port_route_summary",
+    "source_group",
+    "source_month_tag",
+    "combined_content",
 ]
